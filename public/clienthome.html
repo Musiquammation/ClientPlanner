@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mes Rendez-vous</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <!-- Sélection de l'hôte -->
+            <div id="hostSelector">
+                <h1>Sélectionnez votre hôte</h1>
+                <p class="help-text">Bienvenue, <span id="clientName">Client</span></p>
+                
+                <div id="hostList" class="client-list">
+                    <div class="loading">Chargement de vos hôtes...</div>
+                </div>
+                
+                <button class="btn btn-secondary btn-small" id="backToHomeBtn">← Retour</button>
+            </div>
+
+            <!-- Interface de gestion des disponibilités -->
+            <div id="availabilityInterface" style="display: none;">
+                <div class="planner-header">
+                    <div>
+                        <h1>Mes Disponibilités</h1>
+                        <p class="help-text">Hôte: <span id="selectedHostName"></span></p>
+                    </div>
+                    <button class="btn btn-secondary btn-small" id="changeHostBtn">Changer d'hôte</button>
+                </div>
+
+                <div class="alert alert-warning">
+                    ⚠️ Attention, ce planning est temporaire et sera recalculé à chaque modification
+                </div>
+
+                <div class="alert alert-info">
+                    ℹ️ Cliquez sur les créneaux pour indiquer vos disponibilités. 
+                    Plus le pourcentage est bas, plus vous préférez ce créneau.
+                </div>
+
+                <div class="form-group">
+                    <label for="requestedHours">Nombre d'heures souhaitées</label>
+                    <input type="number" id="requestedHours" min="0.5" step="0.5" value="1">
+                    <p class="help-text">Indiquez combien d'heures de rendez-vous vous souhaitez prendre</p>
+                </div>
+
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="selectedSlots">0</div>
+                        <div class="stat-label">Créneaux sélectionnés</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="fixedSlots">0</div>
+                        <div class="stat-label">RDV fixés</div>
+                    </div>
+                </div>
+
+                <h2>Planning disponible</h2>
+
+                <div id="clientPlannerGrid" class="planner-grid">
+                    <div class="loading">Chargement du planning...</div>
+                </div>
+
+                <!-- Slider de coût -->
+                <div id="costSliderContainer" style="display: none;">
+                    <div class="cost-slider">
+                        <div class="cost-value">
+                            <span>Ce créneau vous dérange-t-il ?</span>
+                            <span id="costPercentage">50%</span>
+                        </div>
+                        <input type="range" id="costSlider" min="0" max="100" value="50">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--gray-600); margin-top: 0.5rem;">
+                            <span>Pas du tout (0%)</span>
+                            <span>En dernier recours (100%)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 1.5rem;">
+                    <button class="btn btn-primary" id="saveAvailabilitiesBtn">
+                        Enregistrer mes disponibilités
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="client.js"></script>
+</body>
+</html>

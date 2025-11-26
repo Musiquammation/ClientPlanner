@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestionnaire de Rendez-vous</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Gestionnaire de Rendez-vous</h1>
+            
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="login">Connexion Hôte</button>
+                <button class="tab-btn" data-tab="register">Créer un compte Hôte</button>
+            </div>
+
+            <!-- Connexion -->
+            <div id="login" class="tab-content active">
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="loginEmail">Email</label>
+                        <input type="email" id="loginEmail" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">Mot de passe</label>
+                        <input type="password" id="loginPassword" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Se connecter</button>
+                </form>
+            </div>
+
+            <!-- Inscription -->
+            <div id="register" class="tab-content">
+                <form id="registerForm">
+                    <div class="form-group">
+                        <label for="registerName">Nom</label>
+                        <input type="text" id="registerName" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerEmail">Email</label>
+                        <input type="email" id="registerEmail" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerPassword">Mot de passe</label>
+                        <input type="password" id="registerPassword" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Créer un compte</button>
+                </form>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="client-access">
+                <h3>Accès Client</h3>
+                <p class="help-text">Les clients n'ont pas besoin de mot de passe</p>
+                <form id="clientAccessForm">
+                    <div class="form-group">
+                        <label for="clientId">Votre ID Client</label>
+                        <input type="text" id="clientId" placeholder="ex: CLIENT123" required>
+                    </div>
+                    <button type="submit" class="btn btn-secondary">Accéder à mes rendez-vous</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="index.js"></script>
+</body>
+</html>

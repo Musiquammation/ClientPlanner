@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interface Hôte - Gestion des RDV</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="planner-header">
+                <div>
+                    <h1>Gestion des Rendez-vous</h1>
+                    <p class="help-text">Bienvenue, <span id="hostName">Hôte</span></p>
+                </div>
+                <button class="btn btn-danger btn-small" id="logoutBtn">Déconnexion</button>
+            </div>
+
+            <div class="alert alert-warning" id="tempAlert">
+                ⚠️ Attention, ce planning est temporaire et sera recalculé à chaque modification
+            </div>
+
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalMeetings">0</div>
+                    <div class="stat-label">Créneaux disponibles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="fixedMeetings">0</div>
+                    <div class="stat-label">RDV fixés</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="totalClients">0</div>
+                    <div class="stat-label">Clients</div>
+                </div>
+            </div>
+
+            <div class="planner-header">
+                <h2>Planning</h2>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-primary btn-small" id="addMeetingBtn">+ Ajouter un créneau</button>
+                    <button class="btn btn-secondary btn-small" id="refreshBtn">Recalculer</button>
+                </div>
+            </div>
+
+            <div id="plannerGrid" class="planner-grid">
+                <div class="loading">Chargement du planning...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal pour ajouter un créneau -->
+    <div id="addMeetingModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
+        <div class="card" style="max-width: 500px; margin: 2rem auto;">
+            <h2>Ajouter un créneau</h2>
+            <form id="addMeetingForm">
+                <div class="form-group">
+                    <label for="meetingDate">Date</label>
+                    <input type="date" id="meetingDate" required>
+                </div>
+                <div class="form-group">
+                    <label for="meetingTime">Heure de début</label>
+                    <input type="time" id="meetingTime" required>
+                </div>
+                <div class="form-group">
+                    <label for="meetingDuration">Durée (en heures)</label>
+                    <input type="number" id="meetingDuration" min="0.5" step="0.5" value="1" required>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button type="submit" class="btn btn-primary">Créer</button>
+                    <button type="button" class="btn btn-secondary" id="cancelAddBtn">Annuler</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal pour fixer un RDV -->
+    <div id="fixMeetingModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
+        <div class="card" style="max-width: 500px; margin: 2rem auto;">
+            <h2>Fixer le rendez-vous</h2>
+            <p id="fixMeetingTime" style="font-weight: 600; margin-bottom: 1rem;"></p>
+            
+            <div class="form-group">
+                <label>Sélectionner un client</label>
+                <div id="clientList" class="client-list">
+                    <div class="loading">Chargement...</div>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                <button type="button" class="btn btn-secondary" id="cancelFixBtn">Annuler</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="host.js"></script>
+</body>
+</html>
