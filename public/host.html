@@ -37,6 +37,15 @@
             </div>
 
             <div class="planner-header">
+                <h2>Mes Clients</h2>
+                <button class="btn btn-primary btn-small" id="addClientBtn">+ Ajouter un client</button>
+            </div>
+
+            <div id="clientsList" class="client-list" style="margin-bottom: 2rem;">
+                <div class="loading">Chargement des clients...</div>
+            </div>
+
+            <div class="planner-header">
                 <h2>Planning</h2>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn btn-primary btn-small" id="addMeetingBtn">+ Ajouter un créneau</button>
@@ -46,6 +55,54 @@
 
             <div id="plannerGrid" class="planner-grid">
                 <div class="loading">Chargement du planning...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal pour ajouter un client -->
+    <div id="addClientModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
+        <div class="card" style="max-width: 500px; margin: 2rem auto;">
+            <h2>Ajouter un client</h2>
+            
+            <!-- Recherche de client existant -->
+            <div id="searchClientSection">
+                <div class="form-group">
+                    <label for="clientSearchInput">Rechercher un client existant</label>
+                    <input type="text" id="clientSearchInput" placeholder="Tapez le nom ou l'email..." autocomplete="off">
+                    <p class="help-text">Commencez à taper pour voir les suggestions</p>
+                </div>
+                
+                <div id="clientSuggestions" style="display: none; max-height: 200px; overflow-y: auto; border: 2px solid var(--gray-200); border-radius: 0.5rem; margin-bottom: 1rem;">
+                    <!-- Suggestions dynamiques -->
+                </div>
+                
+                <div style="text-align: center; margin: 1.5rem 0;">
+                    <span style="color: var(--gray-600);">ou</span>
+                </div>
+                
+                <button type="button" class="btn btn-secondary" id="showNewClientFormBtn">
+                    + Créer un nouveau client
+                </button>
+            </div>
+            
+            <!-- Formulaire création nouveau client -->
+            <form id="addNewClientForm" style="display: none;">
+                <div class="form-group">
+                    <label for="newClientNameInput">Nom du client</label>
+                    <input type="text" id="newClientNameInput" placeholder="ex: Alice Martin" required>
+                </div>
+                <div class="form-group">
+                    <label for="newClientEmailInput">Email du client</label>
+                    <input type="email" id="newClientEmailInput" placeholder="ex: alice@example.com" required>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button type="submit" class="btn btn-primary">Créer le client</button>
+                    <button type="button" class="btn btn-secondary" id="backToSearchBtn">← Retour</button>
+                </div>
+            </form>
+            
+            <div style="margin-top: 1rem;">
+                <button type="button" class="btn btn-secondary" id="cancelAddClientBtn">Fermer</button>
             </div>
         </div>
     </div>

@@ -1,3 +1,5 @@
+const API_URL = 'http://localhost:3000/api';
+
 // Gestion des tabs
 document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -10,9 +12,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         document.getElementById(tab).classList.add('active');
     });
 });
-
-// Configuration API
-const API_URL = '/api'; // À adapter selon votre backend
 
 // Connexion hôte
 document.getElementById('loginForm').addEventListener('submit', async (e) => {

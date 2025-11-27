@@ -1,4 +1,4 @@
-const API_URL = '/api';
+const API_URL = 'http://localhost:3000/api';
 let currentMeetings = [];
 let currentResults = [];
 let selectedAvailabilities = new Map(); // meetingId -> cost
@@ -102,7 +102,8 @@ async function loadHostData(hostId) {
             // Charger les disponibilités existantes du client
             selectedAvailabilities.clear();
             data.availabilities.forEach(avail => {
-                selectedAvailabilities.set(avail.meeting_id, avail.cost);
+                // Inverser le coût en préférence : 0% coût = 100% préférence
+                selectedAvailabilities.set(avail.meeting_id, 100 - avail.cost);
             });
             
             renderClientPlanner();
@@ -130,7 +131,10 @@ function renderClientPlanner() {
         const result = currentResults.find(r => r.meeting_id === meeting.id && r.client_id === clientId);
         const isFixed = result?.fixed || false;
         const isSelected = selectedAvailabilities.has(meeting.id);
-        const cost = selectedAvailabilities.get(meeting.id) || 50;
+        const preference = selectedAvailabilities.get(meeting.id) || 100;
+        
+        // Inverser le coût : 100 = idéal (vert), 0 = dernier recours (rouge)
+        const cost = 100 - preference;
         
         // Vérifier si le créneau est réservé par un autre client
         const isReservedByOther = currentResults.some(r => 
@@ -146,25 +150,32 @@ function renderClientPlanner() {
             minute: '2-digit'
         });
 
-        let statusClass = '';
+        let slotClass = '';
         let statusText = '';
+        let slotStyle = '';
         
         if (isFixed) {
-            statusClass = 'fixed';
+            slotClass = 'fixed';
             statusText = '✓ Votre RDV fixé';
         } else if (isReservedByOther) {
-            statusClass = 'reserved';
+            slotClass = 'reserved';
             statusText = 'Réservé';
         } else if (isSelected) {
-            statusClass = 'selected';
-            statusText = `Sélectionné (${cost}%)`;
+            // Calculer la couleur en fonction de la préférence
+            // 100% (préférence max) = vert, 0% (dernier recours) = rouge
+            const hue = preference * 1.2; // 0 = rouge (0°), 100 = vert (120°)
+            const lightness = 85 + (preference * 0.1); // Légère variation de luminosité
+            slotStyle = `background: hsl(${hue}, 70%, ${lightness}%); border-color: hsl(${hue}, 70%, 60%);`;
+            statusText = `Sélectionné (${preference}%)`;
         } else {
-            statusText = 'Disponible';
+            slotClass = 'not-selected';
+            statusText = 'Non sélectionné';
         }
 
         return `
-            <div class="time-slot ${statusClass} ${isReservedByOther ? 'reserved' : ''}" 
+            <div class="time-slot ${slotClass} ${isReservedByOther ? 'reserved' : ''}" 
                  data-meeting-id="${meeting.id}"
+                 style="${slotStyle}"
                  ${!isFixed && !isReservedByOther ? 'style="cursor: pointer;"' : ''}>
                 <div class="slot-time">${timeStr}</div>
                 <div class="slot-status">${statusText}</div>
@@ -200,14 +211,14 @@ function toggleSlotSelection(meetingId) {
         document.getElementById('costSliderContainer').style.display = 'none';
         currentSelectedMeetingId = null;
     } else {
-        // Sélectionner et afficher le slider
+        // Sélectionner et afficher le slider avec 100% par défaut
         currentSelectedMeetingId = meetingId;
-        const currentCost = selectedAvailabilities.get(meetingId) || 50;
-        selectedAvailabilities.set(meetingId, currentCost);
+        const currentPreference = selectedAvailabilities.get(meetingId) || 100;
+        selectedAvailabilities.set(meetingId, currentPreference);
         
         // Afficher et configurer le slider
-        document.getElementById('costSlider').value = currentCost;
-        document.getElementById('costPercentage').textContent = `${currentCost}%`;
+        document.getElementById('costSlider').value = currentPreference;
+        document.getElementById('costPercentage').textContent = `${currentPreference}%`;
         document.getElementById('costSliderContainer').style.display = 'block';
         
         // Scroll vers le slider
@@ -220,13 +231,13 @@ function toggleSlotSelection(meetingId) {
     renderClientPlanner();
 }
 
-// Gérer le slider de coût
+// Gérer le slider de préférence
 document.getElementById('costSlider').addEventListener('input', (e) => {
-    const cost = parseInt(e.target.value);
-    document.getElementById('costPercentage').textContent = `${cost}%`;
+    const preference = parseInt(e.target.value);
+    document.getElementById('costPercentage').textContent = `${preference}%`;
     
     if (currentSelectedMeetingId) {
-        selectedAvailabilities.set(currentSelectedMeetingId, cost);
+        selectedAvailabilities.set(currentSelectedMeetingId, preference);
         renderClientPlanner();
     }
 });
@@ -251,9 +262,10 @@ document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async
         return;
     }
     
-    const availabilities = Array.from(selectedAvailabilities.entries()).map(([meetingId, cost]) => ({
+    // Convertir les préférences en coûts (inverser : 100% préférence = 0% coût)
+    const availabilities = Array.from(selectedAvailabilities.entries()).map(([meetingId, preference]) => ({
         meetingId,
-        cost
+        cost: 100 - preference // Inverser pour le backend
     }));
     
     try {

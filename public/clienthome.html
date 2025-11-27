@@ -58,23 +58,27 @@
                 </div>
 
                 <h2>Planning disponible</h2>
+                <p class="help-text">Cliquez sur les créneaux pour indiquer vos préférences. Les créneaux non sélectionnés ne seront pas pris en compte.</p>
 
                 <div id="clientPlannerGrid" class="planner-grid">
                     <div class="loading">Chargement du planning...</div>
                 </div>
 
-                <!-- Slider de coût -->
+                <!-- Slider de préférence -->
                 <div id="costSliderContainer" style="display: none;">
                     <div class="cost-slider">
                         <div class="cost-value">
-                            <span>Ce créneau vous dérange-t-il ?</span>
-                            <span id="costPercentage">50%</span>
+                            <span>Appréciez-vous ce créneau ?</span>
+                            <span id="costPercentage">100%</span>
                         </div>
-                        <input type="range" id="costSlider" min="0" max="100" value="50">
+                        <input type="range" id="costSlider" min="0" max="100" value="100">
                         <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--gray-600); margin-top: 0.5rem;">
-                            <span>Pas du tout (0%)</span>
-                            <span>En dernier recours (100%)</span>
+                            <span>En dernier recours (0%)</span>
+                            <span>Idéal (100%)</span>
                         </div>
+                        <p class="help-text" style="margin-top: 0.5rem;">
+                            Plus le pourcentage est élevé, plus vous préférez ce créneau
+                        </p>
                     </div>
                 </div>
 
