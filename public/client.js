@@ -1,10 +1,13 @@
-const API_URL = 'http://localhost:3000/api';
+const API_URL = '/api';
 let currentMeetings = [];
 let currentResults = [];
-let selectedAvailabilities = new Map(); // meetingId -> cost
+let currentClients = [];
+let selectedAvailabilities = new Map();
 let currentHostId = null;
 let clientId = null;
 let currentSelectedMeetingId = null;
+let autoSaveTimeout = null;
+let simulatedResults = [];
 
 // Récupérer l'ID client depuis l'URL
 const urlParams = new URLSearchParams(window.location.search);
@@ -22,13 +25,18 @@ async function loadClientInfo() {
         if (response.ok) {
             const client = await response.json();
             document.getElementById('clientName').textContent = client.name;
+            
+            // Afficher le score
+            if (client.score !== undefined) {
+                document.getElementById('clientScore').textContent = Math.round(client.score);
+            }
         }
     } catch (error) {
         console.error('Erreur:', error);
     }
 }
 
-// Charger la liste des hôtes du client
+// Charger la liste des hôtes
 async function loadHosts() {
     try {
         const response = await fetch(`${API_URL}/client/${clientId}/hosts`);
@@ -68,16 +76,13 @@ function renderHostList(hosts) {
 async function selectHost(hostId) {
     currentHostId = hostId;
     
-    // Mettre à jour l'URL
     const newUrl = new URL(window.location);
     newUrl.searchParams.set('host', hostId);
     window.history.pushState({}, '', newUrl);
     
-    // Afficher l'interface de disponibilités
     document.getElementById('hostSelector').style.display = 'none';
     document.getElementById('availabilityInterface').style.display = 'block';
     
-    // Charger les données
     await loadHostData(hostId);
 }
 
@@ -98,19 +103,112 @@ async function loadHostData(hostId) {
             const data = await meetingsRes.json();
             currentMeetings = data.meetings;
             currentResults = data.results;
+            currentClients = data.clients || [];
             
-            // Charger les disponibilités existantes du client
             selectedAvailabilities.clear();
             data.availabilities.forEach(avail => {
-                // Inverser le coût en préférence : 0% coût = 100% préférence
                 selectedAvailabilities.set(avail.meeting_id, 100 - avail.cost);
             });
             
             renderClientPlanner();
+            simulatePlanning();
         }
     } catch (error) {
         console.error('Erreur:', error);
     }
+}
+
+// Simuler le planning côté client
+function simulatePlanning() {
+    if (currentMeetings.length === 0 || selectedAvailabilities.size === 0) {
+        simulatedResults = [];
+        updateSimulationDisplay();
+        return;
+    }
+    
+    // Préparer les données pour planify
+    const fixedResults = currentResults.filter(r => r.fixed);
+    
+    const users = [];
+    const usersMap = new Map();
+    
+    // Ajouter tous les clients
+    currentClients.forEach(client => {
+        usersMap.set(client.id, {
+            userId: client.id,
+            score: client.score || 0,
+            missing_cost: client.missing_cost || 150,
+            requestedHours: 1,
+            disponibilities: []
+        });
+    });
+    
+    // Ajouter les disponibilités du client actuel
+    selectedAvailabilities.forEach((preference, meetingId) => {
+        if (!usersMap.has(clientId)) {
+            usersMap.set(clientId, {
+                userId: clientId,
+                score: 0,
+                missing_cost: 150,
+                requestedHours: parseFloat(document.getElementById('requestedHours').value),
+                disponibilities: []
+            });
+        }
+        usersMap.get(clientId).disponibilities.push({
+            meetingId: meetingId,
+            cost: 100 - preference
+        });
+    });
+    
+    // Convertir en array
+    usersMap.forEach(user => users.push(user));
+    
+    // Appeler planify
+    try {
+        simulatedResults = planify(currentMeetings, fixedResults, users);
+        updateSimulationDisplay();
+    } catch (error) {
+        console.error('Erreur simulation:', error);
+        simulatedResults = [];
+    }
+}
+
+// Afficher les résultats simulés
+function updateSimulationDisplay() {
+    const simulationDiv = document.getElementById('simulationResults');
+    
+    if (simulatedResults.length === 0) {
+        simulationDiv.innerHTML = '<p class="help-text">Aucun créneau proposé pour le moment</p>';
+        return;
+    }
+    
+    const myResults = simulatedResults.filter(r => r.client_id === clientId);
+    
+    if (myResults.length === 0) {
+        simulationDiv.innerHTML = '<p class="help-text">Vous n\'avez pas encore de créneaux proposés</p>';
+        return;
+    }
+    
+    simulationDiv.innerHTML = '<h3>Créneaux probables pour vous :</h3>' + myResults.map(result => {
+        const meeting = currentMeetings.find(m => m.id === result.meeting_id);
+        if (!meeting) return '';
+        
+        const date = new Date(meeting.start);
+        const timeStr = date.toLocaleString('fr-FR', { 
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        
+        return `
+            <div class="time-slot" style="background: #EEF2FF; border-color: #4F46E5; margin-bottom: 0.5rem;">
+                <div class="slot-time">${timeStr}</div>
+                <div class="slot-status">📅 Créneau proposé</div>
+            </div>
+        `;
+    }).join('');
 }
 
 // Afficher le planning client
@@ -122,7 +220,6 @@ function renderClientPlanner() {
         return;
     }
 
-    // Trier les meetings par date
     const sortedMeetings = [...currentMeetings].sort((a, b) => 
         new Date(a.start) - new Date(b.start)
     );
@@ -133,10 +230,8 @@ function renderClientPlanner() {
         const isSelected = selectedAvailabilities.has(meeting.id);
         const preference = selectedAvailabilities.get(meeting.id) || 100;
         
-        // Inverser le coût : 100 = idéal (vert), 0 = dernier recours (rouge)
         const cost = 100 - preference;
         
-        // Vérifier si le créneau est réservé par un autre client
         const isReservedByOther = currentResults.some(r => 
             r.meeting_id === meeting.id && r.fixed && r.client_id !== clientId
         );
@@ -161,10 +256,8 @@ function renderClientPlanner() {
             slotClass = 'reserved';
             statusText = 'Réservé';
         } else if (isSelected) {
-            // Calculer la couleur en fonction de la préférence
-            // 100% (préférence max) = vert, 0% (dernier recours) = rouge
-            const hue = preference * 1.2; // 0 = rouge (0°), 100 = vert (120°)
-            const lightness = 85 + (preference * 0.1); // Légère variation de luminosité
+            const hue = preference * 1.2;
+            const lightness = 85 + (preference * 0.1);
             slotStyle = `background: hsl(${hue}, 70%, ${lightness}%); border-color: hsl(${hue}, 70%, 60%);`;
             statusText = `Sélectionné (${preference}%)`;
         } else {
@@ -183,7 +276,6 @@ function renderClientPlanner() {
         `;
     }).join('');
 
-    // Ajouter les événements de clic
     grid.querySelectorAll('.time-slot').forEach(slot => {
         const meetingId = parseInt(slot.dataset.meetingId);
         const isFixed = currentResults.some(r => 
@@ -203,25 +295,21 @@ function renderClientPlanner() {
     updateClientStats();
 }
 
-// Basculer la sélection d'un créneau
+// Basculer la sélection
 function toggleSlotSelection(meetingId) {
     if (selectedAvailabilities.has(meetingId)) {
-        // Désélectionner
         selectedAvailabilities.delete(meetingId);
         document.getElementById('costSliderContainer').style.display = 'none';
         currentSelectedMeetingId = null;
     } else {
-        // Sélectionner et afficher le slider avec 100% par défaut
         currentSelectedMeetingId = meetingId;
         const currentPreference = selectedAvailabilities.get(meetingId) || 100;
         selectedAvailabilities.set(meetingId, currentPreference);
         
-        // Afficher et configurer le slider
         document.getElementById('costSlider').value = currentPreference;
         document.getElementById('costPercentage').textContent = `${currentPreference}%`;
         document.getElementById('costSliderContainer').style.display = 'block';
         
-        // Scroll vers le slider
         document.getElementById('costSliderContainer').scrollIntoView({ 
             behavior: 'smooth', 
             block: 'nearest' 
@@ -229,9 +317,11 @@ function toggleSlotSelection(meetingId) {
     }
     
     renderClientPlanner();
+    simulatePlanning();
+    scheduleAutoSave();
 }
 
-// Gérer le slider de préférence
+// Gérer le slider
 document.getElementById('costSlider').addEventListener('input', (e) => {
     const preference = parseInt(e.target.value);
     document.getElementById('costPercentage').textContent = `${preference}%`;
@@ -239,33 +329,36 @@ document.getElementById('costSlider').addEventListener('input', (e) => {
     if (currentSelectedMeetingId) {
         selectedAvailabilities.set(currentSelectedMeetingId, preference);
         renderClientPlanner();
+        simulatePlanning();
+        scheduleAutoSave();
     }
 });
 
-// Mettre à jour les stats
-function updateClientStats() {
-    const selected = selectedAvailabilities.size;
-    const fixed = currentResults.filter(r => 
-        r.fixed && r.client_id === clientId
-    ).length;
+// Auto-save après 5 secondes d'inactivité
+function scheduleAutoSave() {
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+    }
     
-    document.getElementById('selectedSlots').textContent = selected;
-    document.getElementById('fixedSlots').textContent = fixed;
+    autoSaveTimeout = setTimeout(() => {
+        saveAvailabilities(true);
+    }, 5000);
 }
 
 // Sauvegarder les disponibilités
-document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async () => {
+async function saveAvailabilities(isAutoSave = false) {
     const requestedHours = parseFloat(document.getElementById('requestedHours').value);
     
     if (selectedAvailabilities.size === 0) {
-        alert('Veuillez sélectionner au moins un créneau');
+        if (!isAutoSave) {
+            alert('Veuillez sélectionner au moins un créneau');
+        }
         return;
     }
     
-    // Convertir les préférences en coûts (inverser : 100% préférence = 0% coût)
     const availabilities = Array.from(selectedAvailabilities.entries()).map(([meetingId, preference]) => ({
         meetingId,
-        cost: 100 - preference // Inverser pour le backend
+        cost: 100 - preference
     }));
     
     try {
@@ -280,15 +373,43 @@ document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async
         });
 
         if (response.ok) {
-            alert('Vos disponibilités ont été enregistrées ! Le planning sera recalculé.');
-            await loadHostData(currentHostId);
+            if (!isAutoSave) {
+                alert('Vos disponibilités ont été enregistrées !');
+            }
+            document.getElementById('autoSaveIndicator').textContent = '✓ Sauvegardé';
+            setTimeout(() => {
+                document.getElementById('autoSaveIndicator').textContent = '';
+            }, 2000);
         } else {
-            alert('Erreur lors de l\'enregistrement');
+            if (!isAutoSave) {
+                alert('Erreur lors de l\'enregistrement');
+            }
         }
     } catch (error) {
         console.error('Erreur:', error);
-        alert('Erreur de connexion au serveur');
+        if (!isAutoSave) {
+            alert('Erreur de connexion au serveur');
+        }
     }
+}
+
+// Mettre à jour les stats
+function updateClientStats() {
+    const selected = selectedAvailabilities.size;
+    const fixed = currentResults.filter(r => 
+        r.fixed && r.client_id === clientId
+    ).length;
+    
+    document.getElementById('selectedSlots').textContent = selected;
+    document.getElementById('fixedSlots').textContent = fixed;
+}
+
+// Bouton sauvegarder
+document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async () => {
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+    }
+    await saveAvailabilities(false);
 });
 
 // Boutons de navigation
@@ -300,10 +421,18 @@ document.getElementById('changeHostBtn').addEventListener('click', () => {
     document.getElementById('hostSelector').style.display = 'block';
     document.getElementById('availabilityInterface').style.display = 'none';
     
-    // Retirer le host de l'URL
     const newUrl = new URL(window.location);
     newUrl.searchParams.delete('host');
     window.history.pushState({}, '', newUrl);
+});
+
+// Bouton retour à la session
+document.getElementById('backToSessionBtn')?.addEventListener('click', () => {
+    if (hostParam) {
+        selectHost(hostParam);
+    } else {
+        loadHosts();
+    }
 });
 
 // Initialisation

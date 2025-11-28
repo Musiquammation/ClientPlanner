@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:3000/api';
+const API_URL = '/api';
 
 // Gestion des tabs
 document.querySelectorAll('.tab-btn').forEach(btn => {

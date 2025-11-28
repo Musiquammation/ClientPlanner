@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const path = require('path');
+const { getNewScore } = require('./public/planify.js');
 require('dotenv').config();
 
 const app = express();
@@ -47,6 +48,23 @@ const authenticateHost = (req, res, next) => {
 	}
 };
 
+// ==================== TÂCHES PLANIFIÉES ====================
+
+// Décroissance des scores hebdomadaire
+setInterval(async () => {
+	try {
+		await pool.query(`
+			UPDATE clients 
+			SET score = score / 2.5,
+			    last_score_decay = CURRENT_TIMESTAMP
+			WHERE last_score_decay < CURRENT_TIMESTAMP - INTERVAL '7 days'
+		`);
+		console.log('✅ Décroissance des scores effectuée');
+	} catch (error) {
+		console.error('❌ Erreur décroissance scores:', error);
+	}
+}, 24 * 60 * 60 * 1000); // Vérifier toutes les 24h
+
 // ==================== ROUTES AUTHENTIFICATION ====================
 
 // Inscription hôte
@@ -54,7 +72,6 @@ app.post('/api/host/register', async (req, res) => {
 	const { name, email, password } = req.body;
 	
 	try {
-		// Vérifier si l'email existe déjà
 		const existingHost = await pool.query(
 			'SELECT id FROM hosts WHERE email = $1',
 			[email]
@@ -64,10 +81,8 @@ app.post('/api/host/register', async (req, res) => {
 			return res.status(400).json({ message: 'Cet email est déjà utilisé' });
 		}
 		
-		// Hasher le mot de passe
 		const hashedPassword = await bcrypt.hash(password, 10);
 		
-		// Créer l'hôte
 		const result = await pool.query(
 			'INSERT INTO hosts (name, email, password) VALUES ($1, $2, $3) RETURNING id',
 			[name, email, hashedPassword]
@@ -140,7 +155,7 @@ app.get('/api/host/:hostId', async (req, res) => {
 	}
 });
 
-// Rechercher des clients (pour suggestions)
+// Rechercher des clients
 app.get('/api/clients/search', authenticateHost, async (req, res) => {
 	const { q } = req.query;
 	
@@ -150,17 +165,18 @@ app.get('/api/clients/search', authenticateHost, async (req, res) => {
 	
 	try {
 		const result = await pool.query(`
-			SELECT id, name, email 
+			SELECT id, name, email, score, missing_cost
 			FROM clients 
 			WHERE LOWER(name) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1)
 			LIMIT 10
 		`, [`%${q}%`]);
 		
-		// Retourner avec référence cryptée au lieu de l'ID réel
 		const clients = result.rows.map(client => ({
 			ref: Buffer.from(client.id).toString('base64'),
 			name: client.name,
-			email: client.email
+			email: client.email,
+			score: client.score,
+			missing_cost: client.missing_cost
 		}));
 		
 		res.json(clients);
@@ -176,21 +192,40 @@ app.get('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 	
 	try {
 		const result = await pool.query(`
-			SELECT c.id, c.name, c.email 
+			SELECT c.id, c.name, c.email, c.score, c.missing_cost
 			FROM clients c
 			INNER JOIN connexions cn ON c.id = cn.client_id
 			WHERE cn.host_id = $1
 			ORDER BY c.name
 		`, [hostId]);
 		
-		// Retourner avec référence cryptée au lieu de l'ID réel
 		const clients = result.rows.map(client => ({
+			id: client.id,
 			ref: Buffer.from(client.id).toString('base64'),
 			name: client.name,
-			email: client.email
+			email: client.email,
+			score: client.score,
+			missing_cost: client.missing_cost
 		}));
 		
 		res.json(clients);
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	}
+});
+
+// Mettre à jour missing_cost d'un client
+app.patch('/api/host/:hostId/clients/:clientId/missing-cost', authenticateHost, async (req, res) => {
+	const { clientId } = req.params;
+	const { missing_cost } = req.body;
+	
+	try {
+		await pool.query(
+			'UPDATE clients SET missing_cost = $1 WHERE id = $2',
+			[missing_cost, clientId]
+		);
+		res.json({ success: true });
 	} catch (error) {
 		console.error('Erreur:', error);
 		res.status(500).json({ error: 'Erreur serveur' });
@@ -207,7 +242,6 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 	try {
 		await client.query('BEGIN');
 		
-		// Vérifier si l'email existe déjà
 		const existingClient = await client.query(
 			'SELECT id FROM clients WHERE email = $1',
 			[email]
@@ -218,18 +252,15 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 			return res.status(400).json({ message: 'Un client avec cet email existe déjà' });
 		}
 		
-		// Générer un ID unique
 		const clientId = await generateUniqueClientId(client);
 		
 		console.log(`[BACKEND] Nouveau client créé - ID: ${clientId}, Nom: ${name}, Email: ${email}`);
 		
-		// Créer le client
 		await client.query(
-			'INSERT INTO clients (id, name, email) VALUES ($1, $2, $3)',
+			'INSERT INTO clients (id, name, email, score, missing_cost) VALUES ($1, $2, $3, 0, 150)',
 			[clientId, name, email]
 		);
 		
-		// Créer la connexion
 		await client.query(
 			'INSERT INTO connexions (host_id, client_id) VALUES ($1, $2)',
 			[hostId, clientId]
@@ -237,14 +268,12 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 		
 		await client.query('COMMIT');
 		
-		// Récupérer les infos de l'hôte pour l'email
 		const hostResult = await pool.query(
 			'SELECT name FROM hosts WHERE id = $1',
 			[hostId]
 		);
 		const hostName = hostResult.rows[0]?.name || 'Votre hôte';
 		
-		// Envoyer l'email avec le lien d'accès
 		await sendWelcomeEmail(clientId, name, email, hostName);
 		
 		res.status(201).json({ success: true });
@@ -257,16 +286,14 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 	}
 });
 
-// Connecter un client existant à un hôte
+// Connecter un client existant
 app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
 	const { clientRef } = req.body;
 	
 	try {
-		// Décoder la référence
 		const clientId = Buffer.from(clientRef, 'base64').toString('utf-8');
 		
-		// Vérifier si la connexion existe déjà
 		const existingConnection = await pool.query(
 			'SELECT id FROM connexions WHERE host_id = $1 AND client_id = $2',
 			[hostId, clientId]
@@ -276,7 +303,6 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 			return res.status(400).json({ message: 'Ce client est déjà associé à votre compte' });
 		}
 		
-		// Récupérer les infos du client et de l'hôte
 		const clientResult = await pool.query(
 			'SELECT name, email FROM clients WHERE id = $1',
 			[clientId]
@@ -295,7 +321,6 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 		const clientEmail = clientResult.rows[0].email;
 		const hostName = hostResult.rows[0]?.name || 'Votre hôte';
 		
-		// Créer la connexion
 		await pool.query(
 			'INSERT INTO connexions (host_id, client_id) VALUES ($1, $2)',
 			[hostId, clientId]
@@ -303,7 +328,6 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 		
 		console.log(`[BACKEND] Client connecté - ID: ${clientId}, Nom: ${clientName}, Hôte: ${hostName}`);
 		
-		// Renvoyer l'email de bienvenue avec le lien
 		await sendWelcomeEmail(clientId, clientName, clientEmail, hostName);
 		
 		res.status(201).json({ success: true });
@@ -313,12 +337,11 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 	}
 });
 
-// Supprimer un client (uniquement la connexion)
+// Supprimer un client
 app.delete('/api/host/:hostId/clients/:clientRef', authenticateHost, async (req, res) => {
 	const { hostId, clientRef } = req.params;
 	
 	try {
-		// Décoder la référence
 		const clientId = Buffer.from(clientRef, 'base64').toString('utf-8');
 		
 		await pool.query(
@@ -332,7 +355,7 @@ app.delete('/api/host/:hostId/clients/:clientRef', authenticateHost, async (req,
 	}
 });
 
-// Récupérer les meetings et résultats d'un hôte
+// Récupérer les meetings et résultats
 app.get('/api/host/:hostId/meetings', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
 	
@@ -358,7 +381,7 @@ app.get('/api/host/:hostId/meetings', authenticateHost, async (req, res) => {
 	}
 });
 
-// Créer un nouveau meeting
+// Créer un meeting
 app.post('/api/host/:hostId/meetings', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
 	const { start, duration } = req.body;
@@ -368,9 +391,6 @@ app.post('/api/host/:hostId/meetings', authenticateHost, async (req, res) => {
 			'INSERT INTO meetings (host_id, start, duration) VALUES ($1, $2, $3) RETURNING id',
 			[hostId, start, duration]
 		);
-		
-		// Recalculer le planning
-		await recalculatePlanning(hostId);
 		
 		res.status(201).json({ meetingId: result.rows[0].id });
 	} catch (error) {
@@ -402,33 +422,82 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 	try {
 		await client.query('BEGIN');
 		
-		// Vérifier si le result existe déjà
+		// Récupérer les infos nécessaires pour calculer le nouveau score
+		const meetingsResult = await client.query(
+			'SELECT * FROM meetings WHERE host_id = $1',
+			[hostId]
+		);
+		
+		const fixedResults = await client.query(`
+			SELECT r.* FROM results r
+			INNER JOIN meetings m ON r.meeting_id = m.id
+			WHERE m.host_id = $1 AND r.fixed = true
+		`, [hostId]);
+		
+		const clientsData = await client.query(`
+			SELECT c.id as user_id, c.score, c.missing_cost,
+			       d.meeting_id, d.cost
+			FROM clients c
+			INNER JOIN connexions cn ON c.id = cn.client_id
+			LEFT JOIN disponibilities d ON c.id = d.client_id
+			WHERE cn.host_id = $1
+		`, [hostId]);
+		
+		// Organiser les données pour getNewScore
+		const usersMap = new Map();
+		clientsData.rows.forEach(row => {
+			if (!usersMap.has(row.user_id)) {
+				usersMap.set(row.user_id, {
+					userId: row.user_id,
+					score: row.score || 0,
+					missing_cost: row.missing_cost || 150,
+					requestedHours: 1,
+					disponibilities: []
+				});
+			}
+			if (row.meeting_id) {
+				usersMap.get(row.user_id).disponibilities.push({
+					meetingId: row.meeting_id,
+					cost: row.cost
+				});
+			}
+		});
+		
+		const users = Array.from(usersMap.values());
+		const userIdx = users.findIndex(u => u.userId === clientId);
+		
+		// Mettre à jour ou créer le résultat
 		const existingResult = await client.query(
 			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2',
 			[meetingId, clientId]
 		);
 		
 		if (existingResult.rows.length > 0) {
-			// Mettre à jour
 			await client.query(
 				'UPDATE results SET fixed = true WHERE meeting_id = $1 AND client_id = $2',
 				[meetingId, clientId]
 			);
 		} else {
-			// Créer
 			await client.query(
 				'INSERT INTO results (meeting_id, client_id, fixed) VALUES ($1, $2, true)',
 				[meetingId, clientId]
 			);
 		}
 		
+		// Calculer et mettre à jour le score
+		if (userIdx !== -1) {
+			const newFixedResults = [...fixedResults.rows, { meeting_id: meetingId, client_id: clientId }];
+			const newScore = getNewScore(meetingsResult.rows, newFixedResults, users, userIdx);
+			
+			await client.query(
+				'UPDATE clients SET score = $1 WHERE id = $2',
+				[newScore, clientId]
+			);
+		}
+		
 		await client.query('COMMIT');
 		
-		// Envoyer l'email
 		await sendFixedMeetingEmail(meetingId, clientId);
-		
-		// Recalculer le planning
-		await recalculatePlanning(hostId);
 		
 		res.json({ success: true, message: 'Email envoyé au client' });
 	} catch (error) {
@@ -447,12 +516,9 @@ app.post('/api/host/:hostId/unfix-meeting', authenticateHost, async (req, res) =
 	
 	try {
 		await pool.query(
-			'UPDATE results SET fixed = false WHERE meeting_id = $1',
+			'DELETE FROM results WHERE meeting_id = $1 AND fixed = true',
 			[meetingId]
 		);
-		
-		// Recalculer le planning
-		await recalculatePlanning(hostId);
 		
 		res.json({ success: true });
 	} catch (error) {
@@ -461,16 +527,54 @@ app.post('/api/host/:hostId/unfix-meeting', authenticateHost, async (req, res) =
 	}
 });
 
-// Recalculer le planning
-app.post('/api/host/:hostId/recalculate', authenticateHost, async (req, res) => {
+// Simuler le planning (sans sauvegarder)
+app.post('/api/host/:hostId/simulate', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
+	const { results } = req.body; // Nouveaux résultats proposés
 	
 	try {
-		await recalculatePlanning(hostId);
-		res.json({ success: true });
+		res.json({ success: true, simulatedResults: results });
 	} catch (error) {
 		console.error('Erreur:', error);
 		res.status(500).json({ error: 'Erreur serveur' });
+	}
+});
+
+// Envoyer les résultats du planning
+app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) => {
+	const { hostId } = req.params;
+	const { results } = req.body;
+	
+	const client = await pool.connect();
+	
+	try {
+		await client.query('BEGIN');
+		
+		// Supprimer les anciens résultats non fixés
+		await client.query(`
+			DELETE FROM results 
+			WHERE meeting_id IN (
+				SELECT id FROM meetings WHERE host_id = $1
+			) AND fixed = false
+		`, [hostId]);
+		
+		// Insérer les nouveaux résultats
+		for (const result of results) {
+			await client.query(
+				'INSERT INTO results (meeting_id, client_id, fixed) VALUES ($1, $2, false) ON CONFLICT DO NOTHING',
+				[result.meeting_id, result.client_id]
+			);
+		}
+		
+		await client.query('COMMIT');
+		
+		res.json({ success: true });
+	} catch (error) {
+		await client.query('ROLLBACK');
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	} finally {
+		client.release();
 	}
 });
 
@@ -482,7 +586,7 @@ app.get('/api/client/:clientId', async (req, res) => {
 	
 	try {
 		const result = await pool.query(
-			'SELECT id, name, email FROM clients WHERE id = $1',
+			'SELECT id, name, email, score FROM clients WHERE id = $1',
 			[clientId]
 		);
 		
@@ -517,7 +621,7 @@ app.get('/api/client/:clientId/hosts', async (req, res) => {
 	}
 });
 
-// Récupérer les meetings d'un hôte pour un client
+// Récupérer les meetings pour un client
 app.get('/api/client/:clientId/host/:hostId/meetings', async (req, res) => {
 	const { clientId, hostId } = req.params;
 	
@@ -540,10 +644,18 @@ app.get('/api/client/:clientId/host/:hostId/meetings', async (req, res) => {
 			WHERE m.host_id = $1 AND d.client_id = $2
 		`, [hostId, clientId]);
 		
+		const clientsData = await pool.query(`
+			SELECT c.id, c.score, c.missing_cost
+			FROM clients c
+			INNER JOIN connexions cn ON c.id = cn.client_id
+			WHERE cn.host_id = $1
+		`, [hostId]);
+		
 		res.json({
 			meetings: meetingsResult.rows,
 			results: resultsResult.rows,
-			availabilities: availabilitiesResult.rows
+			availabilities: availabilitiesResult.rows,
+			clients: clientsData.rows
 		});
 	} catch (error) {
 		console.error('Erreur:', error);
@@ -551,7 +663,7 @@ app.get('/api/client/:clientId/host/:hostId/meetings', async (req, res) => {
 	}
 });
 
-// Enregistrer les disponibilités d'un client
+// Enregistrer les disponibilités
 app.post('/api/client/:clientId/availabilities', async (req, res) => {
 	const { clientId } = req.params;
 	const { hostId, requestedHours, availabilities } = req.body;
@@ -561,7 +673,6 @@ app.post('/api/client/:clientId/availabilities', async (req, res) => {
 	try {
 		await client.query('BEGIN');
 		
-		// Supprimer les anciennes disponibilités
 		await client.query(`
 			DELETE FROM disponibilities 
 			WHERE client_id = $1 
@@ -570,7 +681,6 @@ app.post('/api/client/:clientId/availabilities', async (req, res) => {
 			)
 		`, [clientId, hostId]);
 		
-		// Insérer les nouvelles disponibilités
 		for (const avail of availabilities) {
 			await client.query(
 				'INSERT INTO disponibilities (meeting_id, client_id, cost) VALUES ($1, $2, $3)',
@@ -579,9 +689,6 @@ app.post('/api/client/:clientId/availabilities', async (req, res) => {
 		}
 		
 		await client.query('COMMIT');
-		
-		// Recalculer le planning
-		await recalculatePlanning(hostId);
 		
 		res.json({ success: true });
 	} catch (error) {
@@ -595,17 +702,19 @@ app.post('/api/client/:clientId/availabilities', async (req, res) => {
 
 // ==================== FONCTIONS UTILITAIRES ====================
 
-// Générer un ID client unique
 async function generateUniqueClientId(client) {
 	let attempts = 0;
 	const maxAttempts = 10;
 	
 	while (attempts < maxAttempts) {
-		// Générer un ID aléatoire (format: CLIENT + 6 chiffres)
-		const randomNum = Math.floor(100000 + Math.random() * 900000);
-		const clientId = `CLIENT${randomNum}`;
+		// ID plus long : CLIENT + 10 caractères alphanumériques
+		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+		let randomStr = '';
+		for (let i = 0; i < 10; i++) {
+			randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+		}
+		const clientId = `CLIENT${randomStr}`;
 		
-		// Vérifier s'il existe déjà
 		const existing = await client.query(
 			'SELECT id FROM clients WHERE id = $1',
 			[clientId]
@@ -618,11 +727,9 @@ async function generateUniqueClientId(client) {
 		attempts++;
 	}
 	
-	// Fallback avec timestamp si échec
 	return `CLIENT${Date.now()}`;
 }
 
-// Envoyer un email de bienvenue avec lien d'accès
 async function sendWelcomeEmail(clientId, clientName, clientEmail, hostName) {
 	try {
 		const accessLink = `${process.env.URL || 'http://localhost:3000'}/clienthome.html?id=${clientId}`;
@@ -661,7 +768,6 @@ async function sendWelcomeEmail(clientId, clientName, clientEmail, hostName) {
 	}
 }
 
-// Envoyer un email de confirmation de RDV
 async function sendFixedMeetingEmail(meetingId, clientId) {
 	try {
 		const result = await pool.query(`
@@ -711,189 +817,7 @@ async function sendFixedMeetingEmail(meetingId, clientId) {
 	}
 }
 
-// Recalculer le planning avec planify()
-async function recalculatePlanning(hostId) {
-	const client = await pool.connect();
-	
-	try {
-		// Récupérer tous les meetings
-		const meetingsResult = await client.query(
-			'SELECT * FROM meetings WHERE host_id = $1',
-			[hostId]
-		);
-		const meetings = meetingsResult.rows;
-		
-		// Récupérer les résultats fixés
-		const fixedResult = await client.query(`
-			SELECT r.* FROM results r
-			INNER JOIN meetings m ON r.meeting_id = m.id
-			WHERE m.host_id = $1 AND r.fixed = true
-		`, [hostId]);
-		const fixedResults = fixedResult.rows;
-		
-		// Récupérer tous les clients avec leurs disponibilités
-		const clientsResult = await client.query(`
-			SELECT DISTINCT 
-				c.id as user_id,
-				d.meeting_id,
-				d.cost
-			FROM clients c
-			INNER JOIN connexions cn ON c.id = cn.client_id
-			INNER JOIN disponibilities d ON c.id = d.client_id
-			INNER JOIN meetings m ON d.meeting_id = m.id
-			WHERE cn.host_id = $1
-		`, [hostId]);
-		
-		// Organiser les données pour planify
-		const usersMap = new Map();
-		
-		for (const row of clientsResult.rows) {
-			if (!usersMap.has(row.user_id)) {
-				usersMap.set(row.user_id, {
-					userId: row.user_id,
-					requestedHours: 1, // À améliorer : stocker dans la DB
-					disponibilities: []
-				});
-			}
-			
-			usersMap.get(row.user_id).disponibilities.push({
-				meetingId: row.meeting_id,
-				cost: row.cost
-			});
-		}
-		
-		const users = Array.from(usersMap.values());
-		
-		// Appeler planify
-		const newResults = planify(meetings, fixedResults, users);
-		
-		// Supprimer les anciens résultats non fixés
-		await client.query(`
-			DELETE FROM results 
-			WHERE meeting_id IN (
-				SELECT id FROM meetings WHERE host_id = $1
-			) AND fixed = false
-		`, [hostId]);
-		
-		// Insérer les nouveaux résultats
-		for (const result of newResults) {
-			await client.query(
-				'INSERT INTO results (meeting_id, client_id, fixed) VALUES ($1, $2, false) ON CONFLICT DO NOTHING',
-				[result.meeting_id, result.client_id]
-			);
-		}
-		
-	} catch (error) {
-		console.error('Erreur recalcul:', error);
-		throw error;
-	} finally {
-		client.release();
-	}
-}
-
-
-
-function evalDistributionScore(arr, alpha=2, beta=1) {
-	if (!arr.length) return 0;
-
-	const mean = arr.reduce((sum, x) => sum + x, 0) / arr.length;
-    const epsilon = 1e-8; // pour éviter division par zéro
-    const score = 1 / mean;
-    return score;
-}
-
-/**
- * Génère toutes les combinaisons {meeting, user} possibles
- * en respectant requestedHours et en ignorant les meetings fixés.
- *
- * @param {Array} users - Liste des utilisateurs [{id, requestedHours, disponibilities: [{meetingId, cost}]}]
- * @param {Array} fixedResults
- * @param {Array} meetings - Liste des meetings [{id}]
- */
-function planify(meetings, fixedResults, users) {
-	const fixedMeetingIds = new Set(fixedResults.map(r => r.meeting_id));
-	const userCount = new Map();
-	users.forEach(u => userCount.set(u.id, 0));
-
-	let bestScore = Infinity;
-	let bestComb = [];
-
-	const availableMeetings = meetings.filter(m => !fixedMeetingIds.has(m.id));
-
-	function evalScore(cmb) {
-		const list = new Array(users.length);
-		const presenceCount = new Int32Array(users.length);
-		for (let u = 0; u < users.length; u++) { 
-			list[u] = users[u].score;
-			presenceCount[i] = users[u].requestedHours;
-		}
-		
-		for (let c of cmb) {
-			const m = c.meeting;
-			let val = Infinity;
-			for (let d of c.user.disponibilities) {
-				if (d.meeting === m) {
-					val = d.cost;
-					presenceCount[c.u]--;
-					break;
-				}
-			}
-			
-			list[c.u] += val;
-		};
-
-		for (let u = 0; u < users.length; u++) { 
-			list[c.u] += presenceCount[c.u] * users[u].missing_cost;
-		}
-
-
-		return evalDistributionScore(list);
-	}
-
-	function backtrack(idx, currentCombinations) {
-		if (idx === availableMeetings.length) {
-			const score = evalScore(currentCombinations);
-			if (score > bestScore) {
-				bestScore = score;
-				bestComb = currentCombinations.map(c => ({
-					meeting_id: c.meeting.id,
-					client_id: c.user.id
-				}))
-			}
-
-			return;
-		}
-
-		const meeting = availableMeetings[idx];
-
-		// Pour chaque user disponible
-		for (let u = 0; u < users.length; u++) {
-			const user = users[u];
-			const isAvailable = user.disponibilities.some(d => d.meetingId === meeting.id);
-			const count = userCount.get(user.id);
-
-			if (isAvailable && count < user.requestedHours) {
-				userCount.set(user.id, count + 1);
-				currentCombinations.push({ meeting, user, u });
-
-				backtrack(idx + 1, currentCombinations);
-
-				currentCombinations.pop();
-				userCount.set(user.id, count);
-			}
-		}
-
-		// Optionnel : possibilité de laisser le meeting non assigné
-		backtrack(idx + 1, currentCombinations);
-	}
-
-	backtrack(0, []);
-}
-
-
-// ==================== DÉMARRAGE SERVEUR ====================
-
 app.listen(PORT, () => {
 	console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-	console.log(`📝 Frontend accessible sur http://localhost:${PORT}`);
+	console.log(`📁 Frontend accessible sur http://localhost:${PORT}`);
 });

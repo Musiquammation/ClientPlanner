@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mes Rendez-vous</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="planify.js"></script>
 </head>
 <body>
     <div class="container">
@@ -12,13 +13,21 @@
             <!-- Sélection de l'hôte -->
             <div id="hostSelector">
                 <h1>Sélectionnez votre hôte</h1>
-                <p class="help-text">Bienvenue, <span id="clientName">Client</span></p>
+                <p class="help-text">
+                    Bienvenue, <span id="clientName">Client</span> 
+                    <span style="color: var(--gray-500); font-size: 0.875rem;">(Score: <span id="clientScore">0</span>)</span>
+                </p>
                 
                 <div id="hostList" class="client-list">
                     <div class="loading">Chargement de vos hôtes...</div>
                 </div>
                 
-                <button class="btn btn-secondary btn-small" id="backToHomeBtn">← Retour</button>
+                <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                    <button class="btn btn-secondary btn-small" id="backToHomeBtn">← Retour</button>
+                    <button class="btn btn-primary btn-small" id="backToSessionBtn" style="display: none;">
+                        Accéder à la session en cours
+                    </button>
+                </div>
             </div>
 
             <!-- Interface de gestion des disponibilités -->
@@ -28,16 +37,16 @@
                         <h1>Mes Disponibilités</h1>
                         <p class="help-text">Hôte: <span id="selectedHostName"></span></p>
                     </div>
-                    <button class="btn btn-secondary btn-small" id="changeHostBtn">Changer d'hôte</button>
-                </div>
-
-                <div class="alert alert-warning">
-                    ⚠️ Attention, ce planning est temporaire et sera recalculé à chaque modification
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <span id="autoSaveIndicator" style="color: var(--secondary); font-size: 0.875rem; font-weight: 600;"></span>
+                        <button class="btn btn-secondary btn-small" id="changeHostBtn">Changer d'hôte</button>
+                    </div>
                 </div>
 
                 <div class="alert alert-info">
                     ℹ️ Cliquez sur les créneaux pour indiquer vos disponibilités. 
-                    Plus le pourcentage est bas, plus vous préférez ce créneau.
+                    Plus le pourcentage est élevé, plus vous préférez ce créneau.
+                    Vos modifications sont sauvegardées automatiquement après 5 secondes.
                 </div>
 
                 <div class="form-group">
@@ -58,7 +67,7 @@
                 </div>
 
                 <h2>Planning disponible</h2>
-                <p class="help-text">Cliquez sur les créneaux pour indiquer vos préférences. Les créneaux non sélectionnés ne seront pas pris en compte.</p>
+                <p class="help-text">Cliquez sur les créneaux pour indiquer vos préférences</p>
 
                 <div id="clientPlannerGrid" class="planner-grid">
                     <div class="loading">Chargement du planning...</div>
@@ -82,9 +91,17 @@
                     </div>
                 </div>
 
+                <!-- Simulation du planning -->
+                <div style="margin-top: 2rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem;">
+                    <h3 style="margin-bottom: 1rem;">Simulation du planning</h3>
+                    <div id="simulationResults">
+                        <p class="help-text">Sélectionnez des créneaux pour voir la simulation</p>
+                    </div>
+                </div>
+
                 <div style="margin-top: 1.5rem;">
                     <button class="btn btn-primary" id="saveAvailabilitiesBtn">
-                        Enregistrer mes disponibilités
+                        💾 Sauvegarder maintenant
                     </button>
                 </div>
             </div>

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS clients (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL,
+    score FLOAT DEFAULT 0,
+    missing_cost FLOAT DEFAULT 150,
+    last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -71,16 +74,41 @@ CREATE INDEX IF NOT EXISTS idx_connexions_host ON connexions(host_id);
 CREATE INDEX IF NOT EXISTS idx_connexions_client ON connexions(client_id);
 `;
 
-
+// Ajouter les colonnes si elles n'existent pas (pour migration)
+const migrateSQL = `
+DO $$ 
+BEGIN
+    -- Ajouter score si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='score') THEN
+        ALTER TABLE clients ADD COLUMN score FLOAT DEFAULT 0;
+    END IF;
+    
+    -- Ajouter missing_cost si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='missing_cost') THEN
+        ALTER TABLE clients ADD COLUMN missing_cost FLOAT DEFAULT 150;
+    END IF;
+    
+    -- Ajouter last_score_decay si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='last_score_decay') THEN
+        ALTER TABLE clients ADD COLUMN last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    END IF;
+END $$;
+`;
 
 async function initializeDatabase() {
     const client = await pool.connect();
     
     try {
-        console.log('🔄 Création des tables...');
+        console.log('📄 Création des tables...');
         await client.query(createTablesSQL);
         console.log('✅ Tables créées avec succès');
         
+        console.log('🔄 Migration des colonnes...');
+        await client.query(migrateSQL);
+        console.log('✅ Migration terminée');
         
         console.log('\n📊 Récapitulatif:');
         const hostsCount = await client.query('SELECT COUNT(*) FROM hosts');

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interface Hôte - Gestion des RDV</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="planify.js"></script>
 </head>
 <body>
     <div class="container">
@@ -15,10 +16,6 @@
                     <p class="help-text">Bienvenue, <span id="hostName">Hôte</span></p>
                 </div>
                 <button class="btn btn-danger btn-small" id="logoutBtn">Déconnexion</button>
-            </div>
-
-            <div class="alert alert-warning" id="tempAlert">
-                ⚠️ Attention, ce planning est temporaire et sera recalculé à chaque modification
             </div>
 
             <div class="stats">
@@ -41,16 +38,31 @@
                 <button class="btn btn-primary btn-small" id="addClientBtn">+ Ajouter un client</button>
             </div>
 
+            <div class="alert alert-info">
+                ℹ️ Vous pouvez configurer la pénalité de manque pour chaque client (icône ⚙️). 
+                Plus elle est élevée (50-500), plus il est important de placer ce client.
+            </div>
+
             <div id="clientsList" class="client-list" style="margin-bottom: 2rem;">
                 <div class="loading">Chargement des clients...</div>
+            </div>
+
+            <!-- Simulation du planning -->
+            <div id="simulationSection" style="margin-bottom: 2rem; padding: 1rem; background: var(--gray-50); border-radius: 0.5rem;">
+                <h3>Simulation du planning</h3>
+                <p class="help-text">Chargement de la simulation...</p>
             </div>
 
             <div class="planner-header">
                 <h2>Planning</h2>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn btn-primary btn-small" id="addMeetingBtn">+ Ajouter un créneau</button>
-                    <button class="btn btn-secondary btn-small" id="refreshBtn">Recalculer</button>
                 </div>
+            </div>
+
+            <div class="alert alert-warning">
+                ⚠️ Le planning ci-dessous affiche les RDV fixés et les propositions actuelles. 
+                Les propositions peuvent être modifiées via la simulation ci-dessus.
             </div>
 
             <div id="plannerGrid" class="planner-grid">
@@ -59,12 +71,11 @@
         </div>
     </div>
 
-    <!-- Modal pour ajouter un client -->
+    <!-- Modal ajout client -->
     <div id="addClientModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
         <div class="card" style="max-width: 500px; margin: 2rem auto;">
             <h2>Ajouter un client</h2>
             
-            <!-- Recherche de client existant -->
             <div id="searchClientSection">
                 <div class="form-group">
                     <label for="clientSearchInput">Rechercher un client existant</label>
@@ -73,7 +84,6 @@
                 </div>
                 
                 <div id="clientSuggestions" style="display: none; max-height: 200px; overflow-y: auto; border: 2px solid var(--gray-200); border-radius: 0.5rem; margin-bottom: 1rem;">
-                    <!-- Suggestions dynamiques -->
                 </div>
                 
                 <div style="text-align: center; margin: 1.5rem 0;">
@@ -85,7 +95,6 @@
                 </button>
             </div>
             
-            <!-- Formulaire création nouveau client -->
             <form id="addNewClientForm" style="display: none;">
                 <div class="form-group">
                     <label for="newClientNameInput">Nom du client</label>
@@ -107,7 +116,7 @@
         </div>
     </div>
 
-    <!-- Modal pour ajouter un créneau -->
+    <!-- Modal ajout meeting -->
     <div id="addMeetingModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
         <div class="card" style="max-width: 500px; margin: 2rem auto;">
             <h2>Ajouter un créneau</h2>
@@ -132,7 +141,7 @@
         </div>
     </div>
 
-    <!-- Modal pour fixer un RDV -->
+    <!-- Modal fixer RDV -->
     <div id="fixMeetingModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 1rem; overflow-y: auto;">
         <div class="card" style="max-width: 500px; margin: 2rem auto;">
             <h2>Fixer le rendez-vous</h2>
