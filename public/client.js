@@ -4,17 +4,22 @@ let currentResults = [];
 let currentClients = [];
 let selectedAvailabilities = new Map();
 let currentHostId = null;
-let passwordId = null;
 let currentSelectedMeetingId = null;
 let autoSaveTimeout = null;
 let simulatedResults = [];
 
 const urlParams = new URLSearchParams(window.location.search);
-passkey = urlParams.get('id');
-clientId = null;
+const passkey = urlParams.get('id');
+
+const clientHeaders = {
+    'Content-Type': 'application/json',
+    'X-Client-Passkey': passkey
+};
+
+let clientId = null;
 const hostParam = urlParams.get('host');
 
-if (!passwordId) {
+if (!passkey) {
     window.location.href = '/index.html';
 }
 
@@ -25,17 +30,12 @@ function filterFutureMeetings(meetings) {
 
 async function loadClientInfo() {
     try {
-        const res2 = await fetch(`${API_URL}/getClientId/${passkey}`);
-        if (res2.ok) {
-            passkey = (await res2.json()).id;
-        } else {
-            throw new Error("Failed to get client id");
-        }
-
-
-        const response = await fetch(`${API_URL}/client/${clientId}`);
+        const response = await fetch(`${API_URL}/client/info`, {
+            headers: clientHeaders
+        });
         if (response.ok) {
             const client = await response.json();
+            clientId = client.id; // Stocker l'ID public
             document.getElementById('clientName').textContent = client.name;
             
             if (client.score !== undefined) {
@@ -43,19 +43,21 @@ async function loadClientInfo() {
             }
         }
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error(error);
     }
 }
 
 async function loadHosts() {
     try {
-        const response = await fetch(`${API_URL}/client/${clientId}/hosts`);
+        const response = await fetch(`${API_URL}/client/hosts`, {
+            headers: clientHeaders
+        });
         if (response.ok) {
             const hosts = await response.json();
             renderHostList(hosts);
         }
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error(error);
     }
 }
 
@@ -98,7 +100,9 @@ async function loadHostData(hostId) {
     try {
         const [hostRes, meetingsRes] = await Promise.all([
             fetch(`${API_URL}/host/${hostId}`),
-            fetch(`${API_URL}/client/${clientId}/host/${hostId}/meetings`)
+            fetch(`${API_URL}/client/host/${hostId}/meetings`, {
+                headers: clientHeaders
+            })
         ]);
 
         if (hostRes.ok) {
@@ -124,7 +128,7 @@ async function loadHostData(hostId) {
             simulatePlanning();
         }
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error(error);
     }
 }
 
@@ -287,9 +291,9 @@ async function cancelMeeting(meetingId) {
     if (!confirm('Voulez-vous vraiment annuler ce rendez-vous ?')) return;
 
     try {
-        const response = await fetch(`${API_URL}/client/${clientId}/cancel-meeting`, {
+        const response = await fetch(`${API_URL}/client/cancel-meeting`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: clientHeaders,
             body: JSON.stringify({ meetingId: parseInt(meetingId) })
         });
 
@@ -301,7 +305,7 @@ async function cancelMeeting(meetingId) {
             alert(error.error || 'Erreur lors de l\'annulation');
         }
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error(error);
         alert('Erreur de connexion');
     }
 }
@@ -448,15 +452,16 @@ async function saveAvailabilities(isAutoSave = false) {
     }));
     
     try {
-        const response = await fetch(`${API_URL}/client/${clientId}/availabilities`, {
+        const response = await fetch(`${API_URL}/client/availabilities`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: clientHeaders,
             body: JSON.stringify({
                 hostId: currentHostId,
                 requestedHours,
                 availabilities
             })
         });
+
 
         if (response.ok) {
             if (!isAutoSave) {
@@ -472,7 +477,7 @@ async function saveAvailabilities(isAutoSave = false) {
             }
         }
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error(error);
         if (!isAutoSave) {
             alert('Erreur de connexion au serveur');
         }
@@ -518,6 +523,7 @@ document.getElementById('backToSessionBtn')?.addEventListener('click', () => {
 });
 
 loadClientInfo();
+
 
 if (hostParam) {
     selectHost(hostParam);

@@ -97,19 +97,32 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
     }
 });
 
-// Accès client
+// Accès client avec passkey
 document.getElementById('clientAccessForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    const passkey = document.getElementById('clientId').value;  // Toujours appelé clientId dans le HTML
+    const passkey = document.getElementById('clientId').value.trim();
+    
+    if (!passkey) {
+        alert('Veuillez entrer votre clé d\'accès');
+        return;
+    }
     
     try {
-        const response = await fetch(`${API_URL}/client/${passkey}`);
+        // Vérifier que la passkey est valide en essayant de récupérer les infos
+        const response = await fetch(`${API_URL}/client/info`, {
+            headers: {
+                'X-Client-Passkey': passkey
+            }
+        });
         
         if (response.ok) {
+            // Passkey valide, rediriger vers l'espace client
             window.location.href = `/clienthome.html?id=${passkey}`;
+        } else if (response.status === 401) {
+            alert('Clé d\'accès invalide. Vérifiez votre email pour obtenir le bon lien.');
         } else {
-            alert('Clé d\'accès non trouvée');
+            alert('Erreur lors de la connexion');
         }
     } catch (error) {
         console.error('Erreur:', error);

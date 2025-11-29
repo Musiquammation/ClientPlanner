@@ -16,9 +16,6 @@ const pool = new Pool({
 	ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-
-
-
 const createTablesSQL = `
 -- Table HOSTS
 CREATE TABLE IF NOT EXISTS hosts (
@@ -90,38 +87,31 @@ CREATE INDEX IF NOT EXISTS idx_connexions_client ON connexions(client_id);
 CREATE INDEX IF NOT EXISTS idx_clients_passkey ON clients(passkey);
 `;
 
-// Ajouter les colonnes si elles n'existent pas (pour migration)
 const migrateSQL = `
 DO $$ 
 BEGIN
-    -- Ajouter score si n'existe pas
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name='clients' AND column_name='score') THEN
         ALTER TABLE clients ADD COLUMN score FLOAT DEFAULT 0;
     END IF;
     
-    -- Ajouter missing_cost si n'existe pas
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name='clients' AND column_name='missing_cost') THEN
         ALTER TABLE clients ADD COLUMN missing_cost FLOAT DEFAULT 150;
     END IF;
     
-    -- Ajouter last_score_decay si n'existe pas
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name='clients' AND column_name='last_score_decay') THEN
         ALTER TABLE clients ADD COLUMN last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
     END IF;
     
-    -- Ajouter passkey si n'existe pas
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name='clients' AND column_name='passkey') THEN
         ALTER TABLE clients ADD COLUMN passkey TEXT UNIQUE;
         
-        -- Générer des passkeys pour les clients existants
         UPDATE clients SET passkey = 'PASS' || id || LPAD(FLOOR(RANDOM() * 100000)::TEXT, 5, '0') 
         WHERE passkey IS NULL;
         
-        -- Rendre la colonne NOT NULL après avoir généré les valeurs
         ALTER TABLE clients ALTER COLUMN passkey SET NOT NULL;
     END IF;
 END $$;
@@ -160,10 +150,6 @@ async function initializeDatabase() {
 
 initializeDatabase().catch(console.error);
 
-
-
-
-
 // Configuration email
 const transporter = nodemailer.createTransport({
 	host: process.env.SMTP_HOST,
@@ -179,7 +165,7 @@ const transporter = nodemailer.createTransport({
 app.use(express.json());
 app.use(express.static('public'));
 
-// Middleware d'authentification
+// Middleware d'authentification hôte
 const authenticateHost = (req, res, next) => {
 	const token = req.headers.authorization?.split(' ')[1];
 	
@@ -196,9 +182,33 @@ const authenticateHost = (req, res, next) => {
 	}
 };
 
+// Middleware d'authentification client via passkey
+const authenticateClient = async (req, res, next) => {
+	const passkey = req.headers['x-client-passkey'];
+	
+	if (!passkey) {
+		return res.status(401).json({ error: 'Passkey manquante' });
+	}
+	
+	try {
+		const result = await pool.query(
+			'SELECT id FROM clients WHERE passkey = $1',
+			[passkey]
+		);
+		
+		if (result.rows.length === 0) {
+			return res.status(401).json({ error: 'Passkey invalide' });
+		}
+		
+		req.clientId = result.rows[0].id;
+		next();
+	} catch (error) {
+		return res.status(500).json({ error: 'Erreur serveur' });
+	}
+};
+
 // ==================== TÂCHES PLANIFIÉES ====================
 
-// Décroissance des scores hebdomadaire
 setInterval(async () => {
 	try {
 		await pool.query(`
@@ -211,7 +221,7 @@ setInterval(async () => {
 	} catch (error) {
 		console.error('❌ Erreur décroissance scores:', error);
 	}
-}, 24 * 60 * 60 * 1000); // Vérifier toutes les 24h
+}, 24 * 60 * 60 * 1000);
 
 // ==================== ROUTES AUTHENTIFICATION ====================
 
@@ -320,7 +330,7 @@ app.get('/api/clients/search', authenticateHost, async (req, res) => {
 		`, [`%${q}%`]);
 		
 		const clients = result.rows.map(client => ({
-			ref: Buffer.from(client.id).toString('base64'),
+			id: client.id, // ID public uniquement
 			name: client.name,
 			email: client.email,
 			score: client.score,
@@ -348,8 +358,7 @@ app.get('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 		`, [hostId]);
 		
 		const clients = result.rows.map(client => ({
-			id: client.id,
-			ref: Buffer.from(client.id).toString('base64'),
+			id: client.id, // ID public uniquement
 			name: client.name,
 			email: client.email,
 			score: client.score,
@@ -438,11 +447,9 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 // Connecter un client existant
 app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
-	const { clientRef } = req.body;
+	const { clientId } = req.body; // Reçoit l'ID public
 	
 	try {
-		const clientId = Buffer.from(clientRef, 'base64').toString('utf-8');
-		
 		const existingConnection = await pool.query(
 			'SELECT id FROM connexions WHERE host_id = $1 AND client_id = $2',
 			[hostId, clientId]
@@ -488,12 +495,10 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 });
 
 // Supprimer un client
-app.delete('/api/host/:hostId/clients/:clientRef', authenticateHost, async (req, res) => {
-	const { hostId, clientRef } = req.params;
+app.delete('/api/host/:hostId/clients/:clientId', authenticateHost, async (req, res) => {
+	const { hostId, clientId } = req.params;
 	
 	try {
-		const clientId = Buffer.from(clientRef, 'base64').toString('utf-8');
-		
 		await pool.query(
 			'DELETE FROM connexions WHERE host_id = $1 AND client_id = $2',
 			[hostId, clientId]
@@ -572,7 +577,6 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 	try {
 		await client.query('BEGIN');
 		
-		// Récupérer les infos nécessaires pour calculer le nouveau score
 		const meetingsResult = await client.query(
 			'SELECT * FROM meetings WHERE host_id = $1',
 			[hostId]
@@ -593,7 +597,6 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 			WHERE cn.host_id = $1
 		`, [hostId]);
 		
-		// Organiser les données pour getNewScore
 		const usersMap = new Map();
 		clientsData.rows.forEach(row => {
 			if (!usersMap.has(row.user_id)) {
@@ -616,7 +619,6 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 		const users = Array.from(usersMap.values());
 		const userIdx = users.findIndex(u => u.userId === clientId);
 		
-		// Mettre à jour ou créer le résultat
 		const existingResult = await client.query(
 			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2',
 			[meetingId, clientId]
@@ -634,7 +636,6 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 			);
 		}
 		
-		// Calculer et mettre à jour le score
 		if (userIdx !== -1) {
 			const newFixedResults = [...fixedResults.rows, { meeting_id: meetingId, client_id: clientId }];
 			const newScore = getNewScore(meetingsResult.rows, newFixedResults, users, userIdx);
@@ -677,19 +678,6 @@ app.post('/api/host/:hostId/unfix-meeting', authenticateHost, async (req, res) =
 	}
 });
 
-// Simuler le planning (sans sauvegarder)
-app.post('/api/host/:hostId/simulate', authenticateHost, async (req, res) => {
-	const { hostId } = req.params;
-	const { results } = req.body; // Nouveaux résultats proposés
-	
-	try {
-		res.json({ success: true, simulatedResults: results });
-	} catch (error) {
-		console.error('Erreur:', error);
-		res.status(500).json({ error: 'Erreur serveur' });
-	}
-});
-
 // Envoyer les résultats du planning
 app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) => {
 	const { hostId } = req.params;
@@ -700,7 +688,6 @@ app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) =
 	try {
 		await client.query('BEGIN');
 		
-		// Supprimer les anciens résultats non fixés
 		await client.query(`
 			DELETE FROM results 
 			WHERE meeting_id IN (
@@ -708,7 +695,6 @@ app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) =
 			) AND fixed = false
 		`, [hostId]);
 		
-		// Insérer les nouveaux résultats
 		for (const result of results) {
 			await client.query(
 				'INSERT INTO results (meeting_id, client_id, fixed) VALUES ($1, $2, false) ON CONFLICT DO NOTHING',
@@ -728,21 +714,14 @@ app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) =
 	}
 });
 
-// ==================== ROUTES CLIENT ====================
+// ==================== ROUTES CLIENT (AVEC PASSKEY) ====================
 
-app.get('api/getClientId/:passkey', async (req, res) => {
-	const { passkey } = req.params;
-
-});
-
-// Récupérer infos client
-app.get('/api/client/:id', async (req, res) => {
-	const { id } = req.params;
-	
+// Récupérer infos client (requiert passkey)
+app.get('/api/client/info', authenticateClient, async (req, res) => {
 	try {
 		const result = await pool.query(
 			'SELECT id, name, email, score FROM clients WHERE id = $1',
-			[clientId]
+			[req.clientId]
 		);
 		
 		if (result.rows.length === 0) {
@@ -756,30 +735,16 @@ app.get('/api/client/:id', async (req, res) => {
 	}
 });
 
-// Récupérer les hôtes d'un client
-app.get('/api/client/:id/hosts', async (req, res) => {
-	const { id } = req.params;
-	
+// Récupérer les hôtes d'un client (requiert passkey)
+app.get('/api/client/hosts', authenticateClient, async (req, res) => {
 	try {
-		// Récupérer l'ID réel
-		const clientResult = await pool.query(
-			'SELECT id FROM clients WHERE id = $1',
-			[id]
-		);
-		
-		if (clientResult.rows.length === 0) {
-			return res.status(404).json({ error: 'Client non trouvé' });
-		}
-		
-		const clientId = clientResult.rows[0].id;
-		
 		const result = await pool.query(`
 			SELECT h.id, h.name, h.email 
 			FROM hosts h
 			INNER JOIN connexions cn ON h.id = cn.host_id
 			WHERE cn.client_id = $1
 			ORDER BY h.name
-		`, [clientId]);
+		`, [req.clientId]);
 		
 		res.json(result.rows);
 	} catch (error) {
@@ -788,23 +753,11 @@ app.get('/api/client/:id/hosts', async (req, res) => {
 	}
 });
 
-// Récupérer les meetings pour un client
-app.get('/api/client/:id/host/:hostId/meetings', async (req, res) => {
-	const { id, hostId } = req.params;
+// Récupérer les meetings pour un client (requiert passkey)
+app.get('/api/client/host/:hostId/meetings', authenticateClient, async (req, res) => {
+	const { hostId } = req.params;
 	
 	try {
-		// Récupérer l'ID réel
-		const clientResult = await pool.query(
-			'SELECT id FROM clients WHERE id = $1',
-			[id]
-		);
-		
-		if (clientResult.rows.length === 0) {
-			return res.status(404).json({ error: 'Client non trouvé' });
-		}
-		
-		const clientId = clientResult.rows[0].id;
-		
 		const meetingsResult = await pool.query(
 			'SELECT * FROM meetings WHERE host_id = $1 ORDER BY start',
 			[hostId]
@@ -821,7 +774,7 @@ app.get('/api/client/:id/host/:hostId/meetings', async (req, res) => {
 			FROM disponibilities d
 			INNER JOIN meetings m ON d.meeting_id = m.id
 			WHERE m.host_id = $1 AND d.client_id = $2
-		`, [hostId, clientId]);
+		`, [hostId, req.clientId]);
 		
 		const clientsData = await pool.query(`
 			SELECT c.id, c.score, c.missing_cost
@@ -842,9 +795,8 @@ app.get('/api/client/:id/host/:hostId/meetings', async (req, res) => {
 	}
 });
 
-// Enregistrer les disponibilités
-app.post('/api/client/:id/availabilities', async (req, res) => {
-	const { id } = req.params;
+// Enregistrer les disponibilités (requiert passkey)
+app.post('/api/client/availabilities', authenticateClient, async (req, res) => {
 	const { hostId, requestedHours, availabilities } = req.body;
 	
 	const client = await pool.connect();
@@ -852,31 +804,18 @@ app.post('/api/client/:id/availabilities', async (req, res) => {
 	try {
 		await client.query('BEGIN');
 		
-		// Récupérer l'ID réel
-		const clientResult = await client.query(
-			'SELECT id FROM clients WHERE id = $1',
-			[id]
-		);
-		
-		if (clientResult.rows.length === 0) {
-			await client.query('ROLLBACK');
-			return res.status(404).json({ error: 'Client non trouvé' });
-		}
-		
-		const clientId = clientResult.rows[0].id;
-		
 		await client.query(`
 			DELETE FROM disponibilities 
 			WHERE client_id = $1 
 			AND meeting_id IN (
 				SELECT id FROM meetings WHERE host_id = $2
 			)
-		`, [clientId, hostId]);
+		`, [req.clientId, hostId]);
 		
 		for (const avail of availabilities) {
 			await client.query(
 				'INSERT INTO disponibilities (meeting_id, client_id, cost) VALUES ($1, $2, $3)',
-				[avail.meetingId, clientId, avail.cost]
+				[avail.meetingId, req.clientId, avail.cost]
 			);
 		}
 		
@@ -892,28 +831,15 @@ app.post('/api/client/:id/availabilities', async (req, res) => {
 	}
 });
 
-// Annuler un RDV (côté client)
-app.post('/api/client/:id/cancel-meeting', async (req, res) => {
-	const { id } = req.params;
+// Annuler un RDV (côté client, requiert passkey)
+app.post('/api/client/cancel-meeting', authenticateClient, async (req, res) => {
 	const { meetingId } = req.body;
 	
 	try {
-		// Récupérer l'ID réel
-		const clientResult = await pool.query(
-			'SELECT id FROM clients WHERE id = $1',
-			[id]
-		);
-		
-		if (clientResult.rows.length === 0) {
-			return res.status(404).json({ error: 'Client non trouvé' });
-		}
-		
-		const clientId = clientResult.rows[0].id;
-		
 		// Vérifier que le RDV est bien fixé pour ce client
 		const result = await pool.query(
 			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-			[meetingId, clientId]
+			[meetingId, req.clientId]
 		);
 		
 		if (result.rows.length === 0) {
@@ -922,10 +848,34 @@ app.post('/api/client/:id/cancel-meeting', async (req, res) => {
 		
 		await pool.query(
 			'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-			[meetingId, clientId]
+			[meetingId, req.clientId]
 		);
 		
 		res.json({ success: true });
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	}
+});
+
+// ==================== ROUTES PUBLIQUES (POUR HOST.JS) ====================
+
+// Récupérer les disponibilités d'un client spécifique (par ID public)
+// Cette route est utilisée par host.js pour afficher les disponibilités
+app.get('/api/public/client/:clientId/host/:hostId/availabilities', authenticateHost, async (req, res) => {
+	const { clientId, hostId } = req.params;
+	
+	try {
+		const availabilitiesResult = await pool.query(`
+			SELECT d.meeting_id, d.cost 
+			FROM disponibilities d
+			INNER JOIN meetings m ON d.meeting_id = m.id
+			WHERE m.host_id = $1 AND d.client_id = $2
+		`, [hostId, clientId]);
+		
+		res.json({
+			availabilities: availabilitiesResult.rows
+		});
 	} catch (error) {
 		console.error('Erreur:', error);
 		res.status(500).json({ error: 'Erreur serveur' });
@@ -939,7 +889,6 @@ async function generateUniqueClientId(client) {
 	const maxAttempts = 10;
 	
 	while (attempts < maxAttempts) {
-		// ID plus long : CLIENT + 10 caractères alphanumériques
 		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 		let randomStr = '';
 		for (let i = 0; i < 10; i++) {
@@ -967,7 +916,6 @@ async function generateUniquePasskey(client) {
 	const maxAttempts = 10;
 	
 	while (attempts < maxAttempts) {
-		// Passkey plus longue : PASS + 15 caractères alphanumériques
 		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 		let randomStr = '';
 		for (let i = 0; i < 15; i++) {
@@ -1009,18 +957,18 @@ async function sendWelcomeEmail(passkey, clientName, clientEmail, hostName) {
 					<a href="${accessLink}" style="background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block;">
 					Accéder à mon espace</a>
 				</p>
-			<p style="color: #6B7280; font-size: 0.875rem;">
-				Ou copiez ce lien dans votre navigateur :<br>
-				<a href="${accessLink}">${accessLink}</a>
-			</p>
-			
-			<p style="margin-top: 2rem; color: #EF4444; font-size: 0.875rem; font-weight: 600;">
-				⚠️ Ce lien est personnel et privé. Ne le partagez avec personne.
-			</p>
-			
-			<p style="color: #6B7280; font-size: 0.875rem;">
-				Conservez précieusement ce lien, il vous permettra d'accéder à vos rendez-vous à tout moment.
-			</p>
+				<p style="color: #6B7280; font-size: 0.875rem;">
+					Ou copiez ce lien dans votre navigateur :<br>
+					<a href="${accessLink}">${accessLink}</a>
+				</p>
+				
+				<p style="margin-top: 2rem; color: #EF4444; font-size: 0.875rem; font-weight: 600;">
+					⚠️ Ce lien est personnel et privé. Ne le partagez avec personne.
+				</p>
+				
+				<p style="color: #6B7280; font-size: 0.875rem;">
+					Conservez précieusement ce lien, il vous permettra d'accéder à vos rendez-vous à tout moment.
+				</p>
 			`
 		});
 		
@@ -1028,13 +976,18 @@ async function sendWelcomeEmail(passkey, clientName, clientEmail, hostName) {
 	} catch (error) {
 		console.error('Erreur envoi email bienvenue:', error);
 	}
-	}
-	async function sendFixedMeetingEmail(meetingId, clientId) {
-		try {
-		const result = await pool.query(`SELECT
-			c.name as client_name, c.email as client_email, m.start, m.duration,
-			h.name as host_name FROM meetings m INNER JOIN hosts h ON m.host_id = h.id CROSS JOIN clients c
-			WHERE m.id = $1 AND c.id = $2`, [meetingId, clientId]);
+}
+
+async function sendFixedMeetingEmail(meetingId, clientId) {
+	try {
+		const result = await pool.query(`
+			SELECT c.name as client_name, c.email as client_email, m.start, m.duration,
+			       h.name as host_name 
+			FROM meetings m 
+			INNER JOIN hosts h ON m.host_id = h.id 
+			CROSS JOIN clients c
+			WHERE m.id = $1 AND c.id = $2
+		`, [meetingId, clientId]);
 		
 		if (result.rows.length === 0) return;
 		
@@ -1070,7 +1023,6 @@ async function sendWelcomeEmail(passkey, clientName, clientEmail, hostName) {
 		console.error('Erreur envoi email:', error);
 	}
 }
-
 
 app.listen(PORT, () => {
 	console.log(`🚀 Serveur démarré sur le port ${PORT}`);
