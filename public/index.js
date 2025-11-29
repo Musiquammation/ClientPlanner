@@ -1,5 +1,32 @@
 const API_URL = '/api';
 
+// Redirection automatique si déjà connecté
+const hostToken = localStorage.getItem('hostToken');
+const hostId = localStorage.getItem('hostId');
+
+if (hostToken && hostId) {
+    // Vérifier que le token est toujours valide
+    fetch(`${API_URL}/host/${hostId}`, {
+        headers: {
+            'Authorization': `Bearer ${hostToken}`
+        }
+    })
+    .then(response => {
+        if (response.ok) {
+            window.location.href = '/host.html';
+        } else {
+            // Token invalide, nettoyer le localStorage
+            localStorage.removeItem('hostToken');
+            localStorage.removeItem('hostId');
+        }
+    })
+    .catch(() => {
+        // En cas d'erreur, nettoyer le localStorage
+        localStorage.removeItem('hostToken');
+        localStorage.removeItem('hostId');
+    });
+}
+
 // Gestion des tabs
 document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -74,16 +101,15 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
 document.getElementById('clientAccessForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    const clientId = document.getElementById('clientId').value;
+    const passkey = document.getElementById('clientId').value;  // Toujours appelé clientId dans le HTML
     
     try {
-        // Vérifier que le client existe
-        const response = await fetch(`${API_URL}/client/${clientId}`);
+        const response = await fetch(`${API_URL}/client/${passkey}`);
         
         if (response.ok) {
-            window.location.href = `/clienthome.html?id=${clientId}`;
+            window.location.href = `/clienthome.html?id=${passkey}`;
         } else {
-            alert('ID client non trouvé');
+            alert('Clé d\'accès non trouvée');
         }
     } catch (error) {
         console.error('Erreur:', error);

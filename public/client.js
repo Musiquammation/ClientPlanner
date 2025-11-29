@@ -4,29 +4,40 @@ let currentResults = [];
 let currentClients = [];
 let selectedAvailabilities = new Map();
 let currentHostId = null;
-let clientId = null;
+let passwordId = null;
 let currentSelectedMeetingId = null;
 let autoSaveTimeout = null;
 let simulatedResults = [];
 
-// Récupérer l'ID client depuis l'URL
 const urlParams = new URLSearchParams(window.location.search);
-clientId = urlParams.get('id');
+passkey = urlParams.get('id');
+clientId = null;
 const hostParam = urlParams.get('host');
 
-if (!clientId) {
+if (!passwordId) {
     window.location.href = '/index.html';
 }
 
-// Charger les infos du client
+function filterFutureMeetings(meetings) {
+    const now = new Date();
+    return meetings.filter(meeting => new Date(meeting.start) > now);
+}
+
 async function loadClientInfo() {
     try {
+        const res2 = await fetch(`${API_URL}/getClientId/${passkey}`);
+        if (res2.ok) {
+            passkey = (await res2.json()).id;
+        } else {
+            throw new Error("Failed to get client id");
+        }
+
+
         const response = await fetch(`${API_URL}/client/${clientId}`);
         if (response.ok) {
             const client = await response.json();
             document.getElementById('clientName').textContent = client.name;
             
-            // Afficher le score
             if (client.score !== undefined) {
                 document.getElementById('clientScore').textContent = Math.round(client.score);
             }
@@ -36,7 +47,6 @@ async function loadClientInfo() {
     }
 }
 
-// Charger la liste des hôtes
 async function loadHosts() {
     try {
         const response = await fetch(`${API_URL}/client/${clientId}/hosts`);
@@ -49,7 +59,6 @@ async function loadHosts() {
     }
 }
 
-// Afficher la liste des hôtes
 function renderHostList(hosts) {
     const hostList = document.getElementById('hostList');
     
@@ -72,7 +81,6 @@ function renderHostList(hosts) {
     });
 }
 
-// Sélectionner un hôte
 async function selectHost(hostId) {
     currentHostId = hostId;
     
@@ -86,7 +94,6 @@ async function selectHost(hostId) {
     await loadHostData(hostId);
 }
 
-// Charger les données de l'hôte
 async function loadHostData(hostId) {
     try {
         const [hostRes, meetingsRes] = await Promise.all([
@@ -101,16 +108,19 @@ async function loadHostData(hostId) {
 
         if (meetingsRes.ok) {
             const data = await meetingsRes.json();
-            currentMeetings = data.meetings;
+            currentMeetings = filterFutureMeetings(data.meetings);
             currentResults = data.results;
             currentClients = data.clients || [];
             
             selectedAvailabilities.clear();
             data.availabilities.forEach(avail => {
-                selectedAvailabilities.set(avail.meeting_id, 100 - avail.cost);
+                if (currentMeetings.some(m => m.id === avail.meeting_id)) {
+                    selectedAvailabilities.set(avail.meeting_id, 100 - avail.cost);
+                }
             });
             
             renderClientPlanner();
+            renderFixedMeetings();
             simulatePlanning();
         }
     } catch (error) {
@@ -118,7 +128,6 @@ async function loadHostData(hostId) {
     }
 }
 
-// Simuler le planning côté client
 function simulatePlanning() {
     if (currentMeetings.length === 0 || selectedAvailabilities.size === 0) {
         simulatedResults = [];
@@ -126,13 +135,11 @@ function simulatePlanning() {
         return;
     }
     
-    // Préparer les données pour planify
     const fixedResults = currentResults.filter(r => r.fixed);
     
     const users = [];
     const usersMap = new Map();
     
-    // Ajouter tous les clients
     currentClients.forEach(client => {
         usersMap.set(client.id, {
             userId: client.id,
@@ -143,7 +150,6 @@ function simulatePlanning() {
         });
     });
     
-    // Ajouter les disponibilités du client actuel
     selectedAvailabilities.forEach((preference, meetingId) => {
         if (!usersMap.has(clientId)) {
             usersMap.set(clientId, {
@@ -160,10 +166,8 @@ function simulatePlanning() {
         });
     });
     
-    // Convertir en array
     usersMap.forEach(user => users.push(user));
     
-    // Appeler planify
     try {
         simulatedResults = planify(currentMeetings, fixedResults, users);
         updateSimulationDisplay();
@@ -173,7 +177,6 @@ function simulatePlanning() {
     }
 }
 
-// Afficher les résultats simulés
 function updateSimulationDisplay() {
     const simulationDiv = document.getElementById('simulationResults');
     
@@ -182,10 +185,17 @@ function updateSimulationDisplay() {
         return;
     }
     
-    const myResults = simulatedResults.filter(r => r.client_id === clientId);
+    // Filtrer les résultats non fixés pour moi
+    const myResults = simulatedResults.filter(r => {
+        if (r.client_id !== clientId) return false;
+        const existingResult = currentResults.find(cr => 
+            cr.meeting_id === r.meeting_id && cr.client_id === r.client_id
+        );
+        return !existingResult || !existingResult.fixed;
+    });
     
     if (myResults.length === 0) {
-        simulationDiv.innerHTML = '<p class="help-text">Vous n\'avez pas encore de créneaux proposés</p>';
+        simulationDiv.innerHTML = '<p class="help-text">Vous n\'avez pas de créneaux proposés en attente</p>';
         return;
     }
     
@@ -211,12 +221,96 @@ function updateSimulationDisplay() {
     }).join('');
 }
 
-// Afficher le planning client
+// Afficher les RDV fixés
+function renderFixedMeetings() {
+    const fixedSection = document.getElementById('fixedMeetingsSection');
+    
+    if (!fixedSection) return;
+    
+    const myFixedResults = currentResults.filter(r => r.fixed && r.client_id === clientId);
+    
+    if (myFixedResults.length === 0) {
+        fixedSection.innerHTML = `
+            <h2>Mes rendez-vous fixés</h2>
+            <p class="help-text">Aucun rendez-vous fixé pour le moment</p>
+        `;
+        return;
+    }
+    
+    const sortedFixed = myFixedResults
+        .map(r => ({
+            result: r,
+            meeting: currentMeetings.find(m => m.id === r.meeting_id)
+        }))
+        .filter(item => item.meeting)
+        .sort((a, b) => new Date(a.meeting.start) - new Date(b.meeting.start));
+    
+    fixedSection.innerHTML = `
+        <h2>Mes rendez-vous fixés</h2>
+        <div class="planner-grid">
+            ${sortedFixed.map(({ meeting, result }) => {
+                const date = new Date(meeting.start);
+                const timeStr = date.toLocaleString('fr-FR', { 
+                    weekday: 'long',
+                    day: 'numeric',
+                    month: 'long',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                return `
+                    <div class="time-slot fixed">
+                        <div class="slot-time">${timeStr}</div>
+                        <div class="slot-status">✓ Rendez-vous confirmé</div>
+                        <div class="host-controls">
+                            <button class="btn btn-danger btn-small cancel-meeting-btn" 
+                                    data-meeting-id="${meeting.id}">
+                                Annuler
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+    
+    document.querySelectorAll('.cancel-meeting-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await cancelMeeting(btn.dataset.meetingId);
+        });
+    });
+}
+
+// Annuler un RDV fixé
+async function cancelMeeting(meetingId) {
+    if (!confirm('Voulez-vous vraiment annuler ce rendez-vous ?')) return;
+
+    try {
+        const response = await fetch(`${API_URL}/client/${clientId}/cancel-meeting`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ meetingId: parseInt(meetingId) })
+        });
+
+        if (response.ok) {
+            await loadHostData(currentHostId);
+            alert('Rendez-vous annulé');
+        } else {
+            const error = await response.json();
+            alert(error.error || 'Erreur lors de l\'annulation');
+        }
+    } catch (error) {
+        console.error('Erreur:', error);
+        alert('Erreur de connexion');
+    }
+}
+
 function renderClientPlanner() {
     const grid = document.getElementById('clientPlannerGrid');
     
     if (currentMeetings.length === 0) {
-        grid.innerHTML = '<div class="loading">Aucun créneau disponible pour le moment</div>';
+        grid.innerHTML = '<div class="loading">Aucun créneau futur disponible pour le moment</div>';
         return;
     }
 
@@ -227,10 +321,12 @@ function renderClientPlanner() {
     grid.innerHTML = sortedMeetings.map(meeting => {
         const result = currentResults.find(r => r.meeting_id === meeting.id && r.client_id === clientId);
         const isFixed = result?.fixed || false;
+        
+        // Ne pas afficher les créneaux fixés dans le planning
+        if (isFixed) return '';
+        
         const isSelected = selectedAvailabilities.has(meeting.id);
         const preference = selectedAvailabilities.get(meeting.id) || 100;
-        
-        const cost = 100 - preference;
         
         const isReservedByOther = currentResults.some(r => 
             r.meeting_id === meeting.id && r.fixed && r.client_id !== clientId
@@ -249,10 +345,7 @@ function renderClientPlanner() {
         let statusText = '';
         let slotStyle = '';
         
-        if (isFixed) {
-            slotClass = 'fixed';
-            statusText = '✓ Votre RDV fixé';
-        } else if (isReservedByOther) {
+        if (isReservedByOther) {
             slotClass = 'reserved';
             statusText = 'Réservé';
         } else if (isSelected) {
@@ -269,23 +362,20 @@ function renderClientPlanner() {
             <div class="time-slot ${slotClass} ${isReservedByOther ? 'reserved' : ''}" 
                  data-meeting-id="${meeting.id}"
                  style="${slotStyle}"
-                 ${!isFixed && !isReservedByOther ? 'style="cursor: pointer;"' : ''}>
+                 ${!isReservedByOther ? 'style="cursor: pointer;"' : ''}>
                 <div class="slot-time">${timeStr}</div>
                 <div class="slot-status">${statusText}</div>
             </div>
         `;
-    }).join('');
+    }).filter(html => html).join('');
 
     grid.querySelectorAll('.time-slot').forEach(slot => {
         const meetingId = parseInt(slot.dataset.meetingId);
-        const isFixed = currentResults.some(r => 
-            r.meeting_id === meetingId && r.fixed && r.client_id === clientId
-        );
         const isReserved = currentResults.some(r => 
             r.meeting_id === meetingId && r.fixed && r.client_id !== clientId
         );
         
-        if (!isFixed && !isReserved) {
+        if (!isReserved) {
             slot.addEventListener('click', () => {
                 toggleSlotSelection(meetingId);
             });
@@ -295,7 +385,6 @@ function renderClientPlanner() {
     updateClientStats();
 }
 
-// Basculer la sélection
 function toggleSlotSelection(meetingId) {
     if (selectedAvailabilities.has(meetingId)) {
         selectedAvailabilities.delete(meetingId);
@@ -321,7 +410,6 @@ function toggleSlotSelection(meetingId) {
     scheduleAutoSave();
 }
 
-// Gérer le slider
 document.getElementById('costSlider').addEventListener('input', (e) => {
     const preference = parseInt(e.target.value);
     document.getElementById('costPercentage').textContent = `${preference}%`;
@@ -334,7 +422,6 @@ document.getElementById('costSlider').addEventListener('input', (e) => {
     }
 });
 
-// Auto-save après 5 secondes d'inactivité
 function scheduleAutoSave() {
     if (autoSaveTimeout) {
         clearTimeout(autoSaveTimeout);
@@ -345,7 +432,6 @@ function scheduleAutoSave() {
     }, 5000);
 }
 
-// Sauvegarder les disponibilités
 async function saveAvailabilities(isAutoSave = false) {
     const requestedHours = parseFloat(document.getElementById('requestedHours').value);
     
@@ -393,7 +479,6 @@ async function saveAvailabilities(isAutoSave = false) {
     }
 }
 
-// Mettre à jour les stats
 function updateClientStats() {
     const selected = selectedAvailabilities.size;
     const fixed = currentResults.filter(r => 
@@ -404,7 +489,6 @@ function updateClientStats() {
     document.getElementById('fixedSlots').textContent = fixed;
 }
 
-// Bouton sauvegarder
 document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async () => {
     if (autoSaveTimeout) {
         clearTimeout(autoSaveTimeout);
@@ -412,7 +496,6 @@ document.getElementById('saveAvailabilitiesBtn').addEventListener('click', async
     await saveAvailabilities(false);
 });
 
-// Boutons de navigation
 document.getElementById('backToHomeBtn').addEventListener('click', () => {
     window.location.href = '/index.html';
 });
@@ -426,7 +509,6 @@ document.getElementById('changeHostBtn').addEventListener('click', () => {
     window.history.pushState({}, '', newUrl);
 });
 
-// Bouton retour à la session
 document.getElementById('backToSessionBtn')?.addEventListener('click', () => {
     if (hostParam) {
         selectHost(hostParam);
@@ -435,7 +517,6 @@ document.getElementById('backToSessionBtn')?.addEventListener('click', () => {
     }
 });
 
-// Initialisation
 loadClientInfo();
 
 if (hostParam) {

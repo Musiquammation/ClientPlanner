@@ -18,6 +18,23 @@ const authHeaders = {
     'Authorization': `Bearer ${hostToken}`
 };
 
+// Fonction pour séparer les créneaux passés et futurs
+function separateMeetingsByTime(meetings) {
+    const now = new Date();
+    const past = [];
+    const future = [];
+    
+    meetings.forEach(meeting => {
+        if (new Date(meeting.start) <= now) {
+            past.push(meeting);
+        } else {
+            future.push(meeting);
+        }
+    });
+    
+    return { past, future };
+}
+
 // Charger les données
 async function loadData() {
     try {
@@ -32,21 +49,53 @@ async function loadData() {
             document.getElementById('hostName').textContent = host.name;
         }
 
-        if (meetingsRes.ok) {
-            const data = await meetingsRes.json();
-            currentMeetings = data.meetings;
-            currentResults = data.results;
-            renderPlanner();
-            simulatePlanning();
-        }
-
         if (clientsRes.ok) {
             currentClients = await clientsRes.json();
             renderClientsList();
             updateStats();
         }
+
+        if (meetingsRes.ok) {
+            const data = await meetingsRes.json();
+            currentMeetings = data.meetings;
+            currentResults = data.results;
+            
+            // Charger les disponibilités de tous les clients
+            await loadAllDisponibilities();
+            
+            renderPlanner();
+            renderFixedMeetings();
+            await simulatePlanning();
+        }
     } catch (error) {
         console.error('Erreur:', error);
+    }
+}
+
+// Charger toutes les disponibilités
+async function loadAllDisponibilities() {
+    try {
+        const disponibilitiesPromises = currentClients.map(async client => {
+            const response = await fetch(`${API_URL}/client/${client.id}/host/${hostId}/meetings`);
+            if (response.ok) {
+                const data = await response.json();
+                return {
+                    clientId: client.id,
+                    availabilities: data.availabilities
+                };
+            }
+            return { clientId: client.id, availabilities: [] };
+        });
+        
+        const disponibilitiesData = await Promise.all(disponibilitiesPromises);
+        
+        // Stocker dans une structure accessible
+        allDisponibilities = new Map();
+        disponibilitiesData.forEach(d => {
+            allDisponibilities.set(d.clientId, d.availabilities);
+        });
+    } catch (error) {
+        console.error('Erreur chargement disponibilités:', error);
     }
 }
 
@@ -82,7 +131,6 @@ function renderClientsList() {
         </div>
     `).join('');
 
-    // Événements de suppression
     document.querySelectorAll('.delete-client-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -90,7 +138,6 @@ function renderClientsList() {
         });
     });
 
-    // Événements d'édition missing_cost
     document.querySelectorAll('.edit-missing-cost-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -120,7 +167,6 @@ async function editMissingCost(clientId, currentCost) {
 
         if (response.ok) {
             await loadData();
-            simulatePlanning();
         } else {
             alert('Erreur lors de la mise à jour');
         }
@@ -154,47 +200,36 @@ async function deleteClient(clientRef) {
 
 // Simuler le planning côté hôte
 async function simulatePlanning() {
-    if (currentMeetings.length === 0 || currentClients.length === 0) {
+    const { future } = separateMeetingsByTime(currentMeetings);
+    
+    if (future.length === 0 || currentClients.length === 0) {
         simulatedResults = [];
         updateSimulationDisplay();
         return;
     }
-    
+
     try {
-        // Récupérer les disponibilités de tous les clients
-        const disponibilitiesPromises = currentClients.map(async client => {
-            const response = await fetch(`${API_URL}/client/${client.id}/host/${hostId}/meetings`);
-            if (response.ok) {
-                const data = await response.json();
-                return {
-                    clientId: client.id,
-                    availabilities: data.availabilities
-                };
-            }
-            return { clientId: client.id, availabilities: [] };
+        const fixedResults = currentResults.filter(r => {
+            return r.fixed && future.some(m => m.id === r.meeting_id);
         });
         
-        const disponibilitiesData = await Promise.all(disponibilitiesPromises);
-        
-        // Préparer les données pour planify
-        const fixedResults = currentResults.filter(r => r.fixed);
-        
         const users = currentClients.map(client => {
-            const clientDispos = disponibilitiesData.find(d => d.clientId === client.id);
+            const clientDispos = allDisponibilities.get(client.id) || [];
             return {
                 userId: client.id,
                 score: client.score || 0,
                 missing_cost: client.missing_cost || 150,
                 requestedHours: 1,
-                disponibilities: (clientDispos?.availabilities || []).map(a => ({
-                    meetingId: a.meeting_id,
-                    cost: a.cost
-                }))
+                disponibilities: clientDispos
+                    .filter(a => future.some(m => m.id === a.meeting_id))
+                    .map(a => ({
+                        meetingId: a.meeting_id,
+                        cost: a.cost
+                    }))
             };
         });
         
-        // Appeler planify
-        simulatedResults = planify(currentMeetings, fixedResults, users);
+        simulatedResults = planify(future, fixedResults, users);
         updateSimulationDisplay();
         
     } catch (error) {
@@ -204,13 +239,21 @@ async function simulatePlanning() {
     }
 }
 
-// Afficher la simulation
+// Afficher la simulation avec boutons Fixer
 function updateSimulationDisplay() {
     const simulationDiv = document.getElementById('simulationSection');
     
     if (!simulationDiv) return;
     
-    if (simulatedResults.length === 0) {
+    // Filtrer les résultats fixés
+    const nonFixedResults = simulatedResults.filter(r => {
+        const existingResult = currentResults.find(cr => 
+            cr.meeting_id === r.meeting_id && cr.client_id === r.client_id
+        );
+        return !existingResult || !existingResult.fixed;
+    });
+    
+    if (nonFixedResults.length === 0) {
         simulationDiv.innerHTML = `
             <h3>Simulation du planning</h3>
             <p class="help-text">Aucune proposition pour le moment</p>
@@ -219,7 +262,7 @@ function updateSimulationDisplay() {
     }
     
     const resultsByMeeting = new Map();
-    simulatedResults.forEach(r => {
+    nonFixedResults.forEach(r => {
         resultsByMeeting.set(r.meeting_id, r.client_id);
     });
     
@@ -228,12 +271,8 @@ function updateSimulationDisplay() {
         .sort((a, b) => new Date(a.start) - new Date(b.start));
     
     simulationDiv.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h3>Simulation du planning</h3>
-            <button class="btn btn-primary btn-small" id="sendPlanningBtn">
-                Envoyer ce planning aux clients
-            </button>
-        </div>
+        <h3>Simulation du planning</h3>
+        <p class="help-text">Propositions de créneaux à fixer</p>
         <div class="planner-grid">
             ${sortedMeetings.map(meeting => {
                 const clientId = resultsByMeeting.get(meeting.id);
@@ -251,40 +290,131 @@ function updateSimulationDisplay() {
                 return `
                     <div class="time-slot" style="background: #EEF2FF; border-color: #4F46E5;">
                         <div class="slot-time">${timeStr}</div>
-                        <div class="slot-status">Proposé</div>
+                        <div class="slot-status">📅 Proposé</div>
                         ${client ? `<div class="slot-client">${client.name}</div>` : ''}
+                        <div class="host-controls">
+                            <button class="btn btn-primary btn-small fix-simulated-btn" 
+                                    data-meeting-id="${meeting.id}" 
+                                    data-client-id="${clientId}">
+                                Fixer
+                            </button>
+                        </div>
                     </div>
                 `;
             }).join('')}
         </div>
     `;
     
-    document.getElementById('sendPlanningBtn')?.addEventListener('click', sendPlanning);
+    document.querySelectorAll('.fix-simulated-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            fixMeetingDirect(btn.dataset.meetingId, btn.dataset.clientId);
+        });
+    });
 }
 
-// Envoyer le planning
-async function sendPlanning() {
-    if (!confirm('Envoyer ce planning aux clients ? Cela remplacera les propositions actuelles (hors RDV fixés).')) {
-        return;
-    }
+// Fixer un RDV directement depuis la simulation
+async function fixMeetingDirect(meetingId, clientId) {
+    const meeting = currentMeetings.find(m => m.id === parseInt(meetingId));
+    const client = currentClients.find(c => c.id === clientId);
+    
+    if (!meeting || !client) return;
+    
+    const date = new Date(meeting.start);
+    const timeStr = date.toLocaleString('fr-FR', { 
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+    
+    if (!confirm(`Fixer ce rendez-vous ?\n\n${timeStr}\navec ${client.name}`)) return;
     
     try {
-        const response = await fetch(`${API_URL}/host/${hostId}/send-planning`, {
+        const response = await fetch(`${API_URL}/host/${hostId}/fix-meeting`, {
             method: 'POST',
             headers: authHeaders,
-            body: JSON.stringify({ results: simulatedResults })
+            body: JSON.stringify({ meetingId: parseInt(meetingId), clientId })
         });
 
         if (response.ok) {
-            alert('Planning envoyé avec succès !');
             await loadData();
+            alert('Rendez-vous fixé ! Un email a été envoyé au client.');
         } else {
-            alert('Erreur lors de l\'envoi');
+            const error = await response.json();
+            alert(error.error || 'Erreur lors de la fixation');
         }
     } catch (error) {
         console.error('Erreur:', error);
         alert('Erreur de connexion');
     }
+}
+
+// Afficher les RDV fixés
+function renderFixedMeetings() {
+    const fixedSection = document.getElementById('fixedMeetingsSection');
+    
+    if (!fixedSection) return;
+    
+    const fixedResults = currentResults.filter(r => r.fixed);
+    
+    if (fixedResults.length === 0) {
+        fixedSection.innerHTML = `
+            <h2>Rendez-vous fixés</h2>
+            <p class="help-text">Aucun rendez-vous fixé pour le moment</p>
+        `;
+        return;
+    }
+    
+    const sortedFixed = fixedResults
+        .map(r => ({
+            result: r,
+            meeting: currentMeetings.find(m => m.id === r.meeting_id),
+            client: currentClients.find(c => c.id === r.client_id)
+        }))
+        .filter(item => item.meeting && item.client)
+        .sort((a, b) => new Date(a.meeting.start) - new Date(b.meeting.start));
+    
+    fixedSection.innerHTML = `
+        <h2>Rendez-vous fixés</h2>
+        <div class="planner-grid">
+            ${sortedFixed.map(({ meeting, client }) => {
+                const date = new Date(meeting.start);
+                const isPast = date <= new Date();
+                const timeStr = date.toLocaleString('fr-FR', { 
+                    weekday: 'short',
+                    day: 'numeric',
+                    month: 'short',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                return `
+                    <div class="time-slot fixed ${isPast ? 'past' : ''}" 
+                         style="${isPast ? 'opacity: 0.6;' : ''}">
+                        <div class="slot-time">${timeStr}</div>
+                        <div class="slot-status">✓ Fixé</div>
+                        <div class="slot-client">${client.name}</div>
+                        ${!isPast ? `
+                            <div class="host-controls">
+                                <button class="btn btn-danger btn-small unfix-btn" 
+                                        data-meeting-id="${meeting.id}">
+                                    Défixer
+                                </button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+    
+    document.querySelectorAll('.unfix-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            unfixMeeting(btn.dataset.meetingId);
+        });
+    });
 }
 
 // Afficher le planning
@@ -296,61 +426,26 @@ function renderPlanner() {
         return;
     }
 
-    const sortedMeetings = [...currentMeetings].sort((a, b) => 
-        new Date(a.start) - new Date(b.start)
-    );
-
-    grid.innerHTML = sortedMeetings.map(meeting => {
-        const result = currentResults.find(r => r.meeting_id === meeting.id);
-        const isFixed = result?.fixed || false;
-        const client = isFixed ? currentClients.find(c => c.id === result.client_id) : null;
-        
-        const date = new Date(meeting.start);
-        const timeStr = date.toLocaleString('fr-FR', { 
-            weekday: 'short',
-            day: 'numeric',
-            month: 'short',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-
-        return `
-            <div class="time-slot ${isFixed ? 'fixed' : ''} ${result && !isFixed ? 'reserved' : ''}" 
-                 data-meeting-id="${meeting.id}">
-                <div class="slot-time">${timeStr}</div>
-                <div class="slot-status">
-                    ${isFixed ? '✓ Fixé' : result ? 'Proposé' : 'Disponible'}
-                </div>
-                ${client ? `<div class="slot-client">${client.name}</div>` : ''}
-                <div class="host-controls">
-                    ${!isFixed ? `
-                        <button class="btn btn-primary btn-small fix-btn" data-meeting-id="${meeting.id}">
-                            Fixer
-                        </button>
-                    ` : `
-                        <button class="btn btn-danger btn-small unfix-btn" data-meeting-id="${meeting.id}">
-                            Défixer
-                        </button>
-                    `}
-                    <button class="btn btn-danger btn-small delete-btn" data-meeting-id="${meeting.id}">
-                        Supprimer
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
+    const { past, future } = separateMeetingsByTime(currentMeetings);
+    
+    let html = '';
+    
+    if (future.length > 0) {
+        html += '<h3 style="grid-column: 1 / -1; margin-top: 1rem;">Créneaux à venir</h3>';
+        html += renderMeetingSlots(future, false);
+    }
+    
+    if (past.length > 0) {
+        html += '<h3 style="grid-column: 1 / -1; margin-top: 2rem; color: var(--gray-600);">Créneaux passés</h3>';
+        html += renderMeetingSlots(past, true);
+    }
+    
+    grid.innerHTML = html;
 
     document.querySelectorAll('.fix-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             openFixModal(btn.dataset.meetingId);
-        });
-    });
-
-    document.querySelectorAll('.unfix-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            unfixMeeting(btn.dataset.meetingId);
         });
     });
 
@@ -364,9 +459,55 @@ function renderPlanner() {
     updateStats();
 }
 
-// Suite de host.js...
+// Fonction helper pour afficher les slots (non fixés uniquement)
+function renderMeetingSlots(meetings, isPast) {
+    const sortedMeetings = [...meetings].sort((a, b) => 
+        new Date(a.start) - new Date(b.start)
+    );
 
-// Ouvrir la modal pour fixer
+    return sortedMeetings.map(meeting => {
+        const result = currentResults.find(r => r.meeting_id === meeting.id);
+        const isFixed = result?.fixed || false;
+        
+        // Ne pas afficher les créneaux fixés ici
+        if (isFixed) return '';
+        
+        const client = result ? currentClients.find(c => c.id === result.client_id) : null;
+        
+        const date = new Date(meeting.start);
+        const timeStr = date.toLocaleString('fr-FR', { 
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        return `
+            <div class="time-slot ${result ? 'reserved' : ''} ${isPast ? 'past' : ''}" 
+                 data-meeting-id="${meeting.id}"
+                 style="${isPast ? 'opacity: 0.6;' : ''}">
+                <div class="slot-time">${timeStr}</div>
+                <div class="slot-status">
+                    ${result ? 'Proposé' : 'Disponible'}
+                </div>
+                ${client ? `<div class="slot-client">${client.name}</div>` : ''}
+                <div class="host-controls">
+                    ${!isPast ? `
+                        <button class="btn btn-primary btn-small fix-btn" data-meeting-id="${meeting.id}">
+                            Fixer
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-danger btn-small delete-btn" data-meeting-id="${meeting.id}">
+                        Supprimer
+                    </button>
+                </div>
+            </div>
+        `;
+    }).filter(html => html).join('');
+}
+
+// Ouvrir la modal pour fixer (avec vérification des disponibilités)
 function openFixModal(meetingId) {
     selectedMeetingId = meetingId;
     const meeting = currentMeetings.find(m => m.id === parseInt(meetingId));
@@ -385,13 +526,18 @@ function openFixModal(meetingId) {
 
     document.getElementById('fixMeetingTime').textContent = timeStr;
     
-    // Afficher tous les clients (pas seulement ceux disponibles)
     const clientList = document.getElementById('clientList');
     
-    if (currentClients.length === 0) {
-        clientList.innerHTML = '<div class="loading">Aucun client</div>';
+    // Filtrer les clients qui ont proposé ce créneau
+    const availableClients = currentClients.filter(client => {
+        const clientDispos = allDisponibilities.get(client.id) || [];
+        return clientDispos.some(d => d.meeting_id === parseInt(meetingId));
+    });
+    
+    if (availableClients.length === 0) {
+        clientList.innerHTML = '<div class="loading">Aucun client n\'a proposé ce créneau</div>';
     } else {
-        clientList.innerHTML = currentClients.map(client => `
+        clientList.innerHTML = availableClients.map(client => `
             <div class="client-item" data-client-id="${client.id}">
                 <div class="client-name">${client.name}</div>
                 <div class="client-email">${client.email}</div>
@@ -420,10 +566,10 @@ async function fixMeeting(meetingId, clientId) {
         if (response.ok) {
             document.getElementById('fixMeetingModal').style.display = 'none';
             await loadData();
-            simulatePlanning();
             alert('Rendez-vous fixé ! Un email a été envoyé au client.');
         } else {
-            alert('Erreur lors de la fixation');
+            const error = await response.json();
+            alert(error.error || 'Erreur lors de la fixation');
         }
     } catch (error) {
         console.error('Erreur:', error);
@@ -444,7 +590,6 @@ async function unfixMeeting(meetingId) {
 
         if (response.ok) {
             await loadData();
-            simulatePlanning();
             alert('Rendez-vous défixé');
         } else {
             alert('Erreur');
@@ -467,7 +612,6 @@ async function deleteMeeting(meetingId) {
 
         if (response.ok) {
             await loadData();
-            simulatePlanning();
         } else {
             alert('Erreur lors de la suppression');
         }
@@ -494,6 +638,10 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 
 document.getElementById('addMeetingBtn').addEventListener('click', () => {
     document.getElementById('addMeetingModal').style.display = 'block';
+    
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    document.getElementById('meetingDate').value = dateStr;
 });
 
 document.getElementById('addClientBtn').addEventListener('click', () => {
@@ -592,7 +740,6 @@ async function addExistingClient(clientRef) {
         if (response.ok) {
             document.getElementById('addClientModal').style.display = 'none';
             await loadData();
-            simulatePlanning();
             alert('Client ajouté ! Un email lui a été envoyé.');
         } else {
             const error = await response.json();
@@ -622,7 +769,6 @@ document.getElementById('addNewClientForm').addEventListener('submit', async (e)
             document.getElementById('addClientModal').style.display = 'none';
             document.getElementById('addNewClientForm').reset();
             await loadData();
-            simulatePlanning();
             alert('Client créé ! Un email lui a été envoyé avec son lien d\'accès.');
         } else {
             const error = await response.json();
@@ -655,7 +801,6 @@ document.getElementById('addMeetingForm').addEventListener('submit', async (e) =
             document.getElementById('addMeetingModal').style.display = 'none';
             document.getElementById('addMeetingForm').reset();
             await loadData();
-            simulatePlanning();
         } else {
             alert('Erreur');
         }
@@ -665,5 +810,4 @@ document.getElementById('addMeetingForm').addEventListener('submit', async (e) =
     }
 });
 
-// Charger les données
 loadData();

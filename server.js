@@ -16,6 +16,154 @@ const pool = new Pool({
 	ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
+
+
+
+const createTablesSQL = `
+-- Table HOSTS
+CREATE TABLE IF NOT EXISTS hosts (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table CLIENTS
+CREATE TABLE IF NOT EXISTS clients (
+    id TEXT PRIMARY KEY,
+    passkey TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    score FLOAT DEFAULT 0,
+    missing_cost FLOAT DEFAULT 150,
+    last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table CONNEXIONS (relation host-client)
+CREATE TABLE IF NOT EXISTS connexions (
+    id SERIAL PRIMARY KEY,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(host_id, client_id)
+);
+
+-- Table MEETINGS (créneaux horaires)
+CREATE TABLE IF NOT EXISTS meetings (
+    id SERIAL PRIMARY KEY,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    start TIMESTAMP NOT NULL,
+    duration FLOAT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table RESULTS (résultats de planification)
+CREATE TABLE IF NOT EXISTS results (
+    id SERIAL PRIMARY KEY,
+    meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
+    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+    fixed BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(meeting_id, client_id)
+);
+
+-- Table DISPONIBILITIES (disponibilités des clients)
+CREATE TABLE IF NOT EXISTS disponibilities (
+    id SERIAL PRIMARY KEY,
+    meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
+    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+    cost FLOAT NOT NULL CHECK (cost >= 0 AND cost <= 100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(meeting_id, client_id)
+);
+
+-- Index pour performances
+CREATE INDEX IF NOT EXISTS idx_meetings_host ON meetings(host_id);
+CREATE INDEX IF NOT EXISTS idx_results_meeting ON results(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_results_client ON results(client_id);
+CREATE INDEX IF NOT EXISTS idx_disponibilities_meeting ON disponibilities(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_disponibilities_client ON disponibilities(client_id);
+CREATE INDEX IF NOT EXISTS idx_connexions_host ON connexions(host_id);
+CREATE INDEX IF NOT EXISTS idx_connexions_client ON connexions(client_id);
+CREATE INDEX IF NOT EXISTS idx_clients_passkey ON clients(passkey);
+`;
+
+// Ajouter les colonnes si elles n'existent pas (pour migration)
+const migrateSQL = `
+DO $$ 
+BEGIN
+    -- Ajouter score si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='score') THEN
+        ALTER TABLE clients ADD COLUMN score FLOAT DEFAULT 0;
+    END IF;
+    
+    -- Ajouter missing_cost si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='missing_cost') THEN
+        ALTER TABLE clients ADD COLUMN missing_cost FLOAT DEFAULT 150;
+    END IF;
+    
+    -- Ajouter last_score_decay si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='last_score_decay') THEN
+        ALTER TABLE clients ADD COLUMN last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    END IF;
+    
+    -- Ajouter passkey si n'existe pas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='clients' AND column_name='passkey') THEN
+        ALTER TABLE clients ADD COLUMN passkey TEXT UNIQUE;
+        
+        -- Générer des passkeys pour les clients existants
+        UPDATE clients SET passkey = 'PASS' || id || LPAD(FLOOR(RANDOM() * 100000)::TEXT, 5, '0') 
+        WHERE passkey IS NULL;
+        
+        -- Rendre la colonne NOT NULL après avoir généré les valeurs
+        ALTER TABLE clients ALTER COLUMN passkey SET NOT NULL;
+    END IF;
+END $$;
+`;
+
+async function initializeDatabase() {
+    const client = await pool.connect();
+    
+    try {
+        console.log('📄 Création des tables...');
+        await client.query(createTablesSQL);
+        console.log('✅ Tables créées avec succès');
+        
+        console.log('📄 Migration des colonnes...');
+        await client.query(migrateSQL);
+        console.log('✅ Migration terminée');
+        
+        console.log('\n📊 Récapitulatif:');
+        const hostsCount = await client.query('SELECT COUNT(*) FROM hosts');
+        const clientsCount = await client.query('SELECT COUNT(*) FROM clients');
+        const meetingsCount = await client.query('SELECT COUNT(*) FROM meetings');
+        
+        console.log(`   • Hôtes: ${hostsCount.rows[0].count}`);
+        console.log(`   • Clients: ${clientsCount.rows[0].count}`);
+        console.log(`   • Créneaux: ${meetingsCount.rows[0].count}`);
+        
+        console.log('\n✨ Base de données initialisée avec succès!');
+        
+    } catch (error) {
+        console.error('❌ Erreur lors de l\'initialisation:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+initializeDatabase().catch(console.error);
+
+
+
+
+
 // Configuration email
 const transporter = nodemailer.createTransport({
 	host: process.env.SMTP_HOST,
@@ -253,12 +401,13 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 		}
 		
 		const clientId = await generateUniqueClientId(client);
+		const passkey = await generateUniquePasskey(client);
 		
-		console.log(`[BACKEND] Nouveau client créé - ID: ${clientId}, Nom: ${name}, Email: ${email}`);
+		console.log(`[BACKEND] Nouveau client créé - ID: ${clientId}, Passkey: ${passkey}, Nom: ${name}, Email: ${email}`);
 		
 		await client.query(
-			'INSERT INTO clients (id, name, email, score, missing_cost) VALUES ($1, $2, $3, 0, 150)',
-			[clientId, name, email]
+			'INSERT INTO clients (id, passkey, name, email, score, missing_cost) VALUES ($1, $2, $3, $4, 0, 150)',
+			[clientId, passkey, name, email]
 		);
 		
 		await client.query(
@@ -274,7 +423,7 @@ app.post('/api/host/:hostId/clients', authenticateHost, async (req, res) => {
 		);
 		const hostName = hostResult.rows[0]?.name || 'Votre hôte';
 		
-		await sendWelcomeEmail(clientId, name, email, hostName);
+		await sendWelcomeEmail(passkey, name, email, hostName);
 		
 		res.status(201).json({ success: true });
 	} catch (error) {
@@ -304,7 +453,7 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 		}
 		
 		const clientResult = await pool.query(
-			'SELECT name, email FROM clients WHERE id = $1',
+			'SELECT passkey, name, email FROM clients WHERE id = $1',
 			[clientId]
 		);
 		
@@ -317,6 +466,7 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 			[hostId]
 		);
 		
+		const passkey = clientResult.rows[0].passkey;
 		const clientName = clientResult.rows[0].name;
 		const clientEmail = clientResult.rows[0].email;
 		const hostName = hostResult.rows[0]?.name || 'Votre hôte';
@@ -328,7 +478,7 @@ app.post('/api/host/:hostId/clients/connect', authenticateHost, async (req, res)
 		
 		console.log(`[BACKEND] Client connecté - ID: ${clientId}, Nom: ${clientName}, Hôte: ${hostName}`);
 		
-		await sendWelcomeEmail(clientId, clientName, clientEmail, hostName);
+		await sendWelcomeEmail(passkey, clientName, clientEmail, hostName);
 		
 		res.status(201).json({ success: true });
 	} catch (error) {
@@ -580,9 +730,14 @@ app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) =
 
 // ==================== ROUTES CLIENT ====================
 
+app.get('api/getClientId/:passkey', async (req, res) => {
+	const { passkey } = req.params;
+
+});
+
 // Récupérer infos client
-app.get('/api/client/:clientId', async (req, res) => {
-	const { clientId } = req.params;
+app.get('/api/client/:id', async (req, res) => {
+	const { id } = req.params;
 	
 	try {
 		const result = await pool.query(
@@ -602,10 +757,22 @@ app.get('/api/client/:clientId', async (req, res) => {
 });
 
 // Récupérer les hôtes d'un client
-app.get('/api/client/:clientId/hosts', async (req, res) => {
-	const { clientId } = req.params;
+app.get('/api/client/:id/hosts', async (req, res) => {
+	const { id } = req.params;
 	
 	try {
+		// Récupérer l'ID réel
+		const clientResult = await pool.query(
+			'SELECT id FROM clients WHERE id = $1',
+			[id]
+		);
+		
+		if (clientResult.rows.length === 0) {
+			return res.status(404).json({ error: 'Client non trouvé' });
+		}
+		
+		const clientId = clientResult.rows[0].id;
+		
 		const result = await pool.query(`
 			SELECT h.id, h.name, h.email 
 			FROM hosts h
@@ -622,10 +789,22 @@ app.get('/api/client/:clientId/hosts', async (req, res) => {
 });
 
 // Récupérer les meetings pour un client
-app.get('/api/client/:clientId/host/:hostId/meetings', async (req, res) => {
-	const { clientId, hostId } = req.params;
+app.get('/api/client/:id/host/:hostId/meetings', async (req, res) => {
+	const { id, hostId } = req.params;
 	
 	try {
+		// Récupérer l'ID réel
+		const clientResult = await pool.query(
+			'SELECT id FROM clients WHERE id = $1',
+			[id]
+		);
+		
+		if (clientResult.rows.length === 0) {
+			return res.status(404).json({ error: 'Client non trouvé' });
+		}
+		
+		const clientId = clientResult.rows[0].id;
+		
 		const meetingsResult = await pool.query(
 			'SELECT * FROM meetings WHERE host_id = $1 ORDER BY start',
 			[hostId]
@@ -664,14 +843,27 @@ app.get('/api/client/:clientId/host/:hostId/meetings', async (req, res) => {
 });
 
 // Enregistrer les disponibilités
-app.post('/api/client/:clientId/availabilities', async (req, res) => {
-	const { clientId } = req.params;
+app.post('/api/client/:id/availabilities', async (req, res) => {
+	const { id } = req.params;
 	const { hostId, requestedHours, availabilities } = req.body;
 	
 	const client = await pool.connect();
 	
 	try {
 		await client.query('BEGIN');
+		
+		// Récupérer l'ID réel
+		const clientResult = await client.query(
+			'SELECT id FROM clients WHERE id = $1',
+			[id]
+		);
+		
+		if (clientResult.rows.length === 0) {
+			await client.query('ROLLBACK');
+			return res.status(404).json({ error: 'Client non trouvé' });
+		}
+		
+		const clientId = clientResult.rows[0].id;
 		
 		await client.query(`
 			DELETE FROM disponibilities 
@@ -697,6 +889,46 @@ app.post('/api/client/:clientId/availabilities', async (req, res) => {
 		res.status(500).json({ error: 'Erreur serveur' });
 	} finally {
 		client.release();
+	}
+});
+
+// Annuler un RDV (côté client)
+app.post('/api/client/:id/cancel-meeting', async (req, res) => {
+	const { id } = req.params;
+	const { meetingId } = req.body;
+	
+	try {
+		// Récupérer l'ID réel
+		const clientResult = await pool.query(
+			'SELECT id FROM clients WHERE id = $1',
+			[id]
+		);
+		
+		if (clientResult.rows.length === 0) {
+			return res.status(404).json({ error: 'Client non trouvé' });
+		}
+		
+		const clientId = clientResult.rows[0].id;
+		
+		// Vérifier que le RDV est bien fixé pour ce client
+		const result = await pool.query(
+			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+			[meetingId, clientId]
+		);
+		
+		if (result.rows.length === 0) {
+			return res.status(404).json({ error: 'Rendez-vous non trouvé' });
+		}
+		
+		await pool.query(
+			'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+			[meetingId, clientId]
+		);
+		
+		res.json({ success: true });
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
 	}
 });
 
@@ -730,9 +962,37 @@ async function generateUniqueClientId(client) {
 	return `CLIENT${Date.now()}`;
 }
 
-async function sendWelcomeEmail(clientId, clientName, clientEmail, hostName) {
+async function generateUniquePasskey(client) {
+	let attempts = 0;
+	const maxAttempts = 10;
+	
+	while (attempts < maxAttempts) {
+		// Passkey plus longue : PASS + 15 caractères alphanumériques
+		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+		let randomStr = '';
+		for (let i = 0; i < 15; i++) {
+			randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+		}
+		const passkey = `PASS${randomStr}`;
+		
+		const existing = await client.query(
+			'SELECT passkey FROM clients WHERE passkey = $1',
+			[passkey]
+		);
+		
+		if (existing.rows.length === 0) {
+			return passkey;
+		}
+		
+		attempts++;
+	}
+	
+	return `PASS${Date.now()}`;
+}
+
+async function sendWelcomeEmail(passkey, clientName, clientEmail, hostName) {
 	try {
-		const accessLink = `${process.env.URL || 'http://localhost:3000'}/clienthome.html?id=${clientId}`;
+		const accessLink = `${process.env.URL || 'http://localhost:3000'}/clienthome.html?id=${passkey}`;
 		
 		await transporter.sendMail({
 			from: process.env.SMTP_FROM || 'noreply@rdv-manager.com',
@@ -747,41 +1007,34 @@ async function sendWelcomeEmail(clientId, clientName, clientEmail, hostName) {
 				
 				<p style="margin: 2rem 0;">
 					<a href="${accessLink}" style="background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block;">
-						Accéder à mon espace
-					</a>
+					Accéder à mon espace</a>
 				</p>
-				
-				<p style="color: #6B7280; font-size: 0.875rem;">
-					Ou copiez ce lien dans votre navigateur :<br>
-					<a href="${accessLink}">${accessLink}</a>
-				</p>
-				
-				<p style="margin-top: 2rem; color: #6B7280; font-size: 0.875rem;">
-					Conservez précieusement ce lien, il vous permettra d'accéder à vos rendez-vous à tout moment.
-				</p>
+			<p style="color: #6B7280; font-size: 0.875rem;">
+				Ou copiez ce lien dans votre navigateur :<br>
+				<a href="${accessLink}">${accessLink}</a>
+			</p>
+			
+			<p style="margin-top: 2rem; color: #EF4444; font-size: 0.875rem; font-weight: 600;">
+				⚠️ Ce lien est personnel et privé. Ne le partagez avec personne.
+			</p>
+			
+			<p style="color: #6B7280; font-size: 0.875rem;">
+				Conservez précieusement ce lien, il vous permettra d'accéder à vos rendez-vous à tout moment.
+			</p>
 			`
 		});
 		
-		console.log(`[EMAIL] Email envoyé à ${clientEmail} avec lien: ${accessLink}`);
+		console.log(`[EMAIL] Email envoyé à ${clientEmail} avec passkey: ${passkey}`);
 	} catch (error) {
 		console.error('Erreur envoi email bienvenue:', error);
 	}
-}
-
-async function sendFixedMeetingEmail(meetingId, clientId) {
-	try {
-		const result = await pool.query(`
-			SELECT 
-				c.name as client_name,
-				c.email as client_email,
-				m.start,
-				m.duration,
-				h.name as host_name
-			FROM meetings m
-			INNER JOIN hosts h ON m.host_id = h.id
-			CROSS JOIN clients c
-			WHERE m.id = $1 AND c.id = $2
-		`, [meetingId, clientId]);
+	}
+	async function sendFixedMeetingEmail(meetingId, clientId) {
+		try {
+		const result = await pool.query(`SELECT
+			c.name as client_name, c.email as client_email, m.start, m.duration,
+			h.name as host_name FROM meetings m INNER JOIN hosts h ON m.host_id = h.id CROSS JOIN clients c
+			WHERE m.id = $1 AND c.id = $2`, [meetingId, clientId]);
 		
 		if (result.rows.length === 0) return;
 		
@@ -812,10 +1065,12 @@ async function sendFixedMeetingEmail(meetingId, clientId) {
 				<p>À bientôt !</p>
 			`
 		});
+		
 	} catch (error) {
 		console.error('Erreur envoi email:', error);
 	}
 }
+
 
 app.listen(PORT, () => {
 	console.log(`🚀 Serveur démarré sur le port ${PORT}`);
