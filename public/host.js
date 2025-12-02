@@ -183,7 +183,7 @@ async function deleteClient(clientRef) {
 	if (!confirm('Voulez-vous vraiment supprimer ce client ?')) return;
 
 	try {
-		const response = await fetch(`${API_URL}/host/${hostId}/clients/${clientId}`, {
+		const response = await fetch(`${API_URL}/host/${hostId}/clients/${clientRef}`, {
 			method: 'DELETE',
 			headers: authHeaders
 		});

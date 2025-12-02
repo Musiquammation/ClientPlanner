@@ -777,10 +777,25 @@ app.get('/api/client/host/:hostId/meetings', authenticateClient, async (req, res
 		`, [hostId, req.clientId]);
 		
 		const clientsData = await pool.query(`
-			SELECT c.id, c.score, c.missing_cost
-			FROM clients c
-			INNER JOIN connexions cn ON c.id = cn.client_id
-			WHERE cn.host_id = $1
+			SELECT
+			c.id,
+			c.score,
+			c.missing_cost,
+			COALESCE(
+				json_agg(
+					json_build_object(
+						'meetingId', d.meeting_id,
+						'cost', d.cost
+					)
+				) FILTER (WHERE d.id IS NOT NULL),
+				'[]'
+			) AS disponibilities
+		FROM clients c
+		INNER JOIN connexions cn ON c.id = cn.client_id
+		LEFT JOIN disponibilities d ON d.client_id = c.id
+		WHERE cn.host_id = $1
+		GROUP BY c.id;
+
 		`, [hostId]);
 		
 		res.json({
@@ -857,6 +872,8 @@ app.post('/api/client/cancel-meeting', authenticateClient, async (req, res) => {
 		res.status(500).json({ error: 'Erreur serveur' });
 	}
 });
+
+
 
 // ==================== ROUTES PUBLIQUES (POUR HOST.JS) ====================
 

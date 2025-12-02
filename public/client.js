@@ -150,7 +150,7 @@ function simulatePlanning() {
             score: client.score || 0,
             missing_cost: client.missing_cost || 150,
             requestedHours: 1,
-            disponibilities: []
+            disponibilities: client.disponibilities || []
         });
     });
     
