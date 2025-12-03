@@ -7,6 +7,8 @@ let currentHostId = null;
 let currentSelectedMeetingId = null;
 let autoSaveTimeout = null;
 let simulatedResults = [];
+let currentRequestedHours = 0;
+
 
 const urlParams = new URLSearchParams(window.location.search);
 const passkey = urlParams.get('id');
@@ -96,6 +98,7 @@ async function selectHost(hostId) {
     await loadHostData(hostId);
 }
 
+
 async function loadHostData(hostId) {
     try {
         const [hostRes, meetingsRes] = await Promise.all([
@@ -115,6 +118,10 @@ async function loadHostData(hostId) {
             currentMeetings = filterFutureMeetings(data.meetings);
             currentResults = data.results;
             currentClients = data.clients || [];
+            currentRequestedHours = data.requested_hours || 0;
+            
+            // Mettre à jour l'input
+            document.getElementById('requestedHours').value = currentRequestedHours;
             
             selectedAvailabilities.clear();
             data.availabilities.forEach(avail => {
@@ -131,6 +138,7 @@ async function loadHostData(hostId) {
         console.error(error);
     }
 }
+
 
 function simulatePlanning() {
     if (currentMeetings.length === 0 || selectedAvailabilities.size === 0) {
@@ -160,7 +168,7 @@ function simulatePlanning() {
                 userId: clientId,
                 score: 0,
                 missing_cost: 150,
-                requestedHours: parseFloat(document.getElementById('requestedHours').value),
+                requestedHours: currentRequestedHours,
                 disponibilities: []
             });
         }
@@ -180,6 +188,8 @@ function simulatePlanning() {
         simulatedResults = [];
     }
 }
+
+
 
 function updateSimulationDisplay() {
     const simulationDiv = document.getElementById('simulationResults');
@@ -294,10 +304,17 @@ async function cancelMeeting(meetingId) {
         const response = await fetch(`${API_URL}/client/cancel-meeting`, {
             method: 'POST',
             headers: clientHeaders,
-            body: JSON.stringify({ meetingId: parseInt(meetingId) })
+            body: JSON.stringify({ 
+                meetingId: parseInt(meetingId),
+                hostId: currentHostId // NOUVEAU
+            })
         });
 
         if (response.ok) {
+            // Incrémenter localement
+            currentRequestedHours += 1;
+            document.getElementById('requestedHours').value = currentRequestedHours;
+            
             await loadHostData(currentHostId);
             alert('Rendez-vous annulé');
         } else {
@@ -309,6 +326,7 @@ async function cancelMeeting(meetingId) {
         alert('Erreur de connexion');
     }
 }
+
 
 function renderClientPlanner() {
     const grid = document.getElementById('clientPlannerGrid');
@@ -521,6 +539,43 @@ document.getElementById('backToSessionBtn')?.addEventListener('click', () => {
         loadHosts();
     }
 });
+
+
+
+document.getElementById('requestedHours').addEventListener('change', async (e) => {
+    const newValue = parseInt(e.target.value);
+    if (newValue < 0 || isNaN(newValue)) {
+        e.target.value = currentRequestedHours;
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/client/host/${currentHostId}/requested-hours`, {
+            method: 'PATCH',
+            headers: clientHeaders,
+            body: JSON.stringify({ requested_hours: newValue })
+        });
+        
+        if (response.ok) {
+            currentRequestedHours = newValue;
+            simulatePlanning();
+        } else {
+            e.target.value = currentRequestedHours;
+            alert('Erreur lors de la mise à jour');
+        }
+    } catch (error) {
+        console.error(error);
+        e.target.value = currentRequestedHours;
+    }
+});
+
+
+
+
+
+
+
+
 
 loadClientInfo();
 

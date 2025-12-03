@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS connexions (
     id SERIAL PRIMARY KEY,
     host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
     client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+    requested_hours INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(host_id, client_id)
 );
@@ -635,6 +636,7 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 				[meetingId, clientId]
 			);
 		}
+
 		
 		if (userIdx !== -1) {
 			const newFixedResults = [...fixedResults.rows, { meeting_id: meetingId, client_id: clientId }];
@@ -645,6 +647,12 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 				[newScore, clientId]
 			);
 		}
+
+		await client.query(
+			'UPDATE connexions SET requested_hours = GREATEST(0, requested_hours - 1) WHERE host_id = $1 AND client_id = $2',
+			[hostId, clientId]
+		);
+
 		
 		await client.query('COMMIT');
 		
@@ -662,20 +670,45 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 
 // Défixer un rendez-vous
 app.post('/api/host/:hostId/unfix-meeting', authenticateHost, async (req, res) => {
-	const { hostId } = req.params;
-	const { meetingId } = req.body;
-	
-	try {
-		await pool.query(
-			'DELETE FROM results WHERE meeting_id = $1 AND fixed = true',
-			[meetingId]
-		);
-		
-		res.json({ success: true });
-	} catch (error) {
-		console.error('Erreur:', error);
-		res.status(500).json({ error: 'Erreur serveur' });
-	}
+    const { hostId } = req.params;
+    const { meetingId } = req.body;
+    
+    const client = await pool.connect();
+    
+    try {
+        await client.query('BEGIN');
+        
+        // Récupérer le client_id avant de supprimer
+        const resultData = await client.query(
+            'SELECT client_id FROM results WHERE meeting_id = $1 AND fixed = true',
+            [meetingId]
+        );
+        
+        if (resultData.rows.length > 0) {
+            const clientId = resultData.rows[0].client_id;
+            
+            // Supprimer le result
+            await client.query(
+                'DELETE FROM results WHERE meeting_id = $1 AND fixed = true',
+                [meetingId]
+            );
+            
+            // Incrémenter requested_hours
+            await client.query(
+                'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
+                [hostId, clientId]
+            );
+        }
+        
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Erreur:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    } finally {
+        client.release();
+    }
 });
 
 // Envoyer les résultats du planning
@@ -775,6 +808,12 @@ app.get('/api/client/host/:hostId/meetings', authenticateClient, async (req, res
 			INNER JOIN meetings m ON d.meeting_id = m.id
 			WHERE m.host_id = $1 AND d.client_id = $2
 		`, [hostId, req.clientId]);
+
+		const requestedHoursResult = await pool.query(
+			'SELECT requested_hours FROM connexions WHERE host_id = $1 AND client_id = $2',
+			[hostId, req.clientId]
+		);
+
 		
 		const clientsData = await pool.query(`
 			SELECT
@@ -802,8 +841,10 @@ app.get('/api/client/host/:hostId/meetings', authenticateClient, async (req, res
 			meetings: meetingsResult.rows,
 			results: resultsResult.rows,
 			availabilities: availabilitiesResult.rows,
-			clients: clientsData.rows
+			clients: clientsData.rows,
+			requested_hours: requestedHoursResult.rows[0]?.requested_hours || 0
 		});
+
 	} catch (error) {
 		console.error('Erreur:', error);
 		res.status(500).json({ error: 'Erreur serveur' });
@@ -848,29 +889,89 @@ app.post('/api/client/availabilities', authenticateClient, async (req, res) => {
 
 // Annuler un RDV (côté client, requiert passkey)
 app.post('/api/client/cancel-meeting', authenticateClient, async (req, res) => {
-	const { meetingId } = req.body;
-	
-	try {
-		// Vérifier que le RDV est bien fixé pour ce client
-		const result = await pool.query(
-			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-			[meetingId, req.clientId]
-		);
-		
-		if (result.rows.length === 0) {
-			return res.status(404).json({ error: 'Rendez-vous non trouvé' });
-		}
-		
-		await pool.query(
-			'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-			[meetingId, req.clientId]
-		);
-		
-		res.json({ success: true });
-	} catch (error) {
-		console.error('Erreur:', error);
-		res.status(500).json({ error: 'Erreur serveur' });
-	}
+    const { meetingId, hostId } = req.body; // Ajouter hostId
+    
+    const client = await pool.connect();
+    
+    try {
+        await client.query('BEGIN');
+        
+        // Vérifier que le RDV est bien fixé pour ce client
+        const result = await client.query(
+            'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+            [meetingId, req.clientId]
+        );
+        
+        if (result.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Rendez-vous non trouvé' });
+        }
+        
+        // Supprimer le RDV
+        await client.query(
+            'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+            [meetingId, req.clientId]
+        );
+        
+        // Incrémenter requested_hours
+        await client.query(
+            'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
+            [hostId, req.clientId]
+        );
+        
+        await client.query('COMMIT');
+        
+        res.json({ success: true });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Erreur:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    } finally {
+        client.release();
+    }
+});
+
+// Ajouter cette route après les autres routes CLIENT
+app.get('/api/client/host/:hostId/requested-hours', authenticateClient, async (req, res) => {
+    const { hostId } = req.params;
+    
+    try {
+        const result = await pool.query(
+            'SELECT requested_hours FROM connexions WHERE host_id = $1 AND client_id = $2',
+            [hostId, req.clientId]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Connexion non trouvée' });
+        }
+        
+        res.json({ requested_hours: result.rows[0].requested_hours || 1 });
+    } catch (error) {
+        console.error('Erreur:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// Ajouter cette route après la précédente
+app.patch('/api/client/host/:hostId/requested-hours', authenticateClient, async (req, res) => {
+    const { hostId } = req.params;
+    const { requested_hours } = req.body;
+    
+    if (!Number.isInteger(requested_hours) || requested_hours < 0) {
+        return res.status(400).json({ error: 'requested_hours doit être un entier positif' });
+    }
+    
+    try {
+        await pool.query(
+            'UPDATE connexions SET requested_hours = $1 WHERE host_id = $2 AND client_id = $3',
+            [requested_hours, hostId, req.clientId]
+        );
+        
+        res.json({ success: true, requested_hours });
+    } catch (error) {
+        console.error('Erreur:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
 });
 
 
