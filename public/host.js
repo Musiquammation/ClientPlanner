@@ -216,13 +216,26 @@ async function simulatePlanning() {
 			return r.fixed && future.some(m => m.id === r.meeting_id);
 		});
 		
+		// Récupérer les requestedHours depuis le backend
+		const requestedHoursRes = await fetch(`${API_URL}/host/${hostId}/clients-requested-hours`, {
+			headers: authHeaders
+		});
+		
+		let requestedHoursMap = new Map();
+		if (requestedHoursRes.ok) {
+			const data = await requestedHoursRes.json();
+			data.forEach(item => {
+				requestedHoursMap.set(item.client_id, item.requested_hours);
+			});
+		}
+		
 		const users = currentClients.map(client => {
 			const clientDispos = allDisponibilities.get(client.id) || [];
 			return {
 				userId: client.id,
 				score: client.score || 0,
 				missing_cost: client.missing_cost || 150,
-				requestedHours: 1,
+				requestedHours: requestedHoursMap.get(client.id) || 1, // Utiliser la vraie valeur
 				disponibilities: clientDispos
 					.filter(a => future.some(m => m.id === a.meeting_id))
 					.map(a => ({
@@ -732,7 +745,7 @@ function displayClientSuggestions(suggestions) {
 }
 
 // Ajouter client existant
-async function addExistingClient(clientRef) {
+async function addExistingClient(clientId) {
 	try {
 		const response = await fetch(`${API_URL}/host/${hostId}/clients/connect`, {
 			method: 'POST',

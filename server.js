@@ -19,62 +19,62 @@ const pool = new Pool({
 const createTablesSQL = `
 -- Table HOSTS
 CREATE TABLE IF NOT EXISTS hosts (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	id SERIAL PRIMARY KEY,
+	name TEXT NOT NULL,
+	email TEXT UNIQUE NOT NULL,
+	password TEXT NOT NULL,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Table CLIENTS
 CREATE TABLE IF NOT EXISTS clients (
-    id TEXT PRIMARY KEY,
-    passkey TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    score FLOAT DEFAULT 0,
-    missing_cost FLOAT DEFAULT 150,
-    last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	id TEXT PRIMARY KEY,
+	passkey TEXT UNIQUE NOT NULL,
+	name TEXT NOT NULL,
+	email TEXT NOT NULL,
+	score FLOAT DEFAULT 0,
+	missing_cost FLOAT DEFAULT 150,
+	last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Table CONNEXIONS (relation host-client)
 CREATE TABLE IF NOT EXISTS connexions (
-    id SERIAL PRIMARY KEY,
-    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
-    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
-    requested_hours INTEGER DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(host_id, client_id)
+	id SERIAL PRIMARY KEY,
+	host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+	client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+	requested_hours INTEGER DEFAULT 1,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(host_id, client_id)
 );
 
 -- Table MEETINGS (créneaux horaires)
 CREATE TABLE IF NOT EXISTS meetings (
-    id SERIAL PRIMARY KEY,
-    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
-    start TIMESTAMP NOT NULL,
-    duration FLOAT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	id SERIAL PRIMARY KEY,
+	host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+	start TIMESTAMP NOT NULL,
+	duration FLOAT NOT NULL,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Table RESULTS (résultats de planification)
 CREATE TABLE IF NOT EXISTS results (
-    id SERIAL PRIMARY KEY,
-    meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
-    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
-    fixed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(meeting_id, client_id)
+	id SERIAL PRIMARY KEY,
+	meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
+	client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+	fixed BOOLEAN DEFAULT FALSE,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(meeting_id, client_id)
 );
 
 -- Table DISPONIBILITIES (disponibilités des clients)
 CREATE TABLE IF NOT EXISTS disponibilities (
-    id SERIAL PRIMARY KEY,
-    meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
-    client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
-    cost FLOAT NOT NULL CHECK (cost >= 0 AND cost <= 100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(meeting_id, client_id)
+	id SERIAL PRIMARY KEY,
+	meeting_id INTEGER REFERENCES meetings(id) ON DELETE CASCADE,
+	client_id TEXT REFERENCES clients(id) ON DELETE CASCADE,
+	cost FLOAT NOT NULL CHECK (cost >= 0 AND cost <= 100),
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(meeting_id, client_id)
 );
 
 -- Index pour performances
@@ -91,62 +91,62 @@ CREATE INDEX IF NOT EXISTS idx_clients_passkey ON clients(passkey);
 const migrateSQL = `
 DO $$ 
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='clients' AND column_name='score') THEN
-        ALTER TABLE clients ADD COLUMN score FLOAT DEFAULT 0;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='clients' AND column_name='missing_cost') THEN
-        ALTER TABLE clients ADD COLUMN missing_cost FLOAT DEFAULT 150;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='clients' AND column_name='last_score_decay') THEN
-        ALTER TABLE clients ADD COLUMN last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='clients' AND column_name='passkey') THEN
-        ALTER TABLE clients ADD COLUMN passkey TEXT UNIQUE;
-        
-        UPDATE clients SET passkey = 'PASS' || id || LPAD(FLOOR(RANDOM() * 100000)::TEXT, 5, '0') 
-        WHERE passkey IS NULL;
-        
-        ALTER TABLE clients ALTER COLUMN passkey SET NOT NULL;
-    END IF;
+	IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+				   WHERE table_name='clients' AND column_name='score') THEN
+		ALTER TABLE clients ADD COLUMN score FLOAT DEFAULT 0;
+	END IF;
+	
+	IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+				   WHERE table_name='clients' AND column_name='missing_cost') THEN
+		ALTER TABLE clients ADD COLUMN missing_cost FLOAT DEFAULT 150;
+	END IF;
+	
+	IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+				   WHERE table_name='clients' AND column_name='last_score_decay') THEN
+		ALTER TABLE clients ADD COLUMN last_score_decay TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+	END IF;
+	
+	IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+				   WHERE table_name='clients' AND column_name='passkey') THEN
+		ALTER TABLE clients ADD COLUMN passkey TEXT UNIQUE;
+		
+		UPDATE clients SET passkey = 'PASS' || id || LPAD(FLOOR(RANDOM() * 100000)::TEXT, 5, '0') 
+		WHERE passkey IS NULL;
+		
+		ALTER TABLE clients ALTER COLUMN passkey SET NOT NULL;
+	END IF;
 END $$;
 `;
 
 async function initializeDatabase() {
-    const client = await pool.connect();
-    
-    try {
-        console.log('📄 Création des tables...');
-        await client.query(createTablesSQL);
-        console.log('✅ Tables créées avec succès');
-        
-        console.log('📄 Migration des colonnes...');
-        await client.query(migrateSQL);
-        console.log('✅ Migration terminée');
-        
-        console.log('\n📊 Récapitulatif:');
-        const hostsCount = await client.query('SELECT COUNT(*) FROM hosts');
-        const clientsCount = await client.query('SELECT COUNT(*) FROM clients');
-        const meetingsCount = await client.query('SELECT COUNT(*) FROM meetings');
-        
-        console.log(`   • Hôtes: ${hostsCount.rows[0].count}`);
-        console.log(`   • Clients: ${clientsCount.rows[0].count}`);
-        console.log(`   • Créneaux: ${meetingsCount.rows[0].count}`);
-        
-        console.log('\n✨ Base de données initialisée avec succès!');
-        
-    } catch (error) {
-        console.error('❌ Erreur lors de l\'initialisation:', error);
-        throw error;
-    } finally {
-        client.release();
-    }
+	const client = await pool.connect();
+	
+	try {
+		console.log('📄 Création des tables...');
+		await client.query(createTablesSQL);
+		console.log('✅ Tables créées avec succès');
+		
+		console.log('📄 Migration des colonnes...');
+		await client.query(migrateSQL);
+		console.log('✅ Migration terminée');
+		
+		console.log('\n📊 Récapitulatif:');
+		const hostsCount = await client.query('SELECT COUNT(*) FROM hosts');
+		const clientsCount = await client.query('SELECT COUNT(*) FROM clients');
+		const meetingsCount = await client.query('SELECT COUNT(*) FROM meetings');
+		
+		console.log(`   • Hôtes: ${hostsCount.rows[0].count}`);
+		console.log(`   • Clients: ${clientsCount.rows[0].count}`);
+		console.log(`   • Créneaux: ${meetingsCount.rows[0].count}`);
+		
+		console.log('\n✨ Base de données initialisée avec succès!');
+		
+	} catch (error) {
+		console.error('❌ Erreur lors de l\'initialisation:', error);
+		throw error;
+	} finally {
+		client.release();
+	}
 }
 
 initializeDatabase().catch(console.error);
@@ -215,7 +215,7 @@ setInterval(async () => {
 		await pool.query(`
 			UPDATE clients 
 			SET score = score / 2.5,
-			    last_score_decay = CURRENT_TIMESTAMP
+				last_score_decay = CURRENT_TIMESTAMP
 			WHERE last_score_decay < CURRENT_TIMESTAMP - INTERVAL '7 days'
 		`);
 		console.log('✅ Décroissance des scores effectuée');
@@ -591,7 +591,7 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 		
 		const clientsData = await client.query(`
 			SELECT c.id as user_id, c.score, c.missing_cost,
-			       d.meeting_id, d.cost
+				   d.meeting_id, d.cost
 			FROM clients c
 			INNER JOIN connexions cn ON c.id = cn.client_id
 			LEFT JOIN disponibilities d ON c.id = d.client_id
@@ -670,45 +670,45 @@ app.post('/api/host/:hostId/fix-meeting', authenticateHost, async (req, res) => 
 
 // Défixer un rendez-vous
 app.post('/api/host/:hostId/unfix-meeting', authenticateHost, async (req, res) => {
-    const { hostId } = req.params;
-    const { meetingId } = req.body;
-    
-    const client = await pool.connect();
-    
-    try {
-        await client.query('BEGIN');
-        
-        // Récupérer le client_id avant de supprimer
-        const resultData = await client.query(
-            'SELECT client_id FROM results WHERE meeting_id = $1 AND fixed = true',
-            [meetingId]
-        );
-        
-        if (resultData.rows.length > 0) {
-            const clientId = resultData.rows[0].client_id;
-            
-            // Supprimer le result
-            await client.query(
-                'DELETE FROM results WHERE meeting_id = $1 AND fixed = true',
-                [meetingId]
-            );
-            
-            // Incrémenter requested_hours
-            await client.query(
-                'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
-                [hostId, clientId]
-            );
-        }
-        
-        await client.query('COMMIT');
-        res.json({ success: true });
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('Erreur:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    } finally {
-        client.release();
-    }
+	const { hostId } = req.params;
+	const { meetingId } = req.body;
+	
+	const client = await pool.connect();
+	
+	try {
+		await client.query('BEGIN');
+		
+		// Récupérer le client_id avant de supprimer
+		const resultData = await client.query(
+			'SELECT client_id FROM results WHERE meeting_id = $1 AND fixed = true',
+			[meetingId]
+		);
+		
+		if (resultData.rows.length > 0) {
+			const clientId = resultData.rows[0].client_id;
+			
+			// Supprimer le result
+			await client.query(
+				'DELETE FROM results WHERE meeting_id = $1 AND fixed = true',
+				[meetingId]
+			);
+			
+			// Incrémenter requested_hours
+			await client.query(
+				'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
+				[hostId, clientId]
+			);
+		}
+		
+		await client.query('COMMIT');
+		res.json({ success: true });
+	} catch (error) {
+		await client.query('ROLLBACK');
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	} finally {
+		client.release();
+	}
 });
 
 // Envoyer les résultats du planning
@@ -746,6 +746,30 @@ app.post('/api/host/:hostId/send-planning', authenticateHost, async (req, res) =
 		client.release();
 	}
 });
+
+// Récupérer les requested_hours de tous les clients d'un hôte
+app.get('/api/host/:hostId/clients-requested-hours', authenticateHost, async (req, res) => {
+	const { hostId } = req.params;
+	
+	try {
+		const result = await pool.query(
+			'SELECT client_id, requested_hours FROM connexions WHERE host_id = $1',
+			[hostId]
+		);
+		
+		res.json(result.rows);
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	}
+});
+
+
+
+
+
+
+
 
 // ==================== ROUTES CLIENT (AVEC PASSKEY) ====================
 
@@ -889,89 +913,89 @@ app.post('/api/client/availabilities', authenticateClient, async (req, res) => {
 
 // Annuler un RDV (côté client, requiert passkey)
 app.post('/api/client/cancel-meeting', authenticateClient, async (req, res) => {
-    const { meetingId, hostId } = req.body; // Ajouter hostId
-    
-    const client = await pool.connect();
-    
-    try {
-        await client.query('BEGIN');
-        
-        // Vérifier que le RDV est bien fixé pour ce client
-        const result = await client.query(
-            'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-            [meetingId, req.clientId]
-        );
-        
-        if (result.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ error: 'Rendez-vous non trouvé' });
-        }
-        
-        // Supprimer le RDV
-        await client.query(
-            'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
-            [meetingId, req.clientId]
-        );
-        
-        // Incrémenter requested_hours
-        await client.query(
-            'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
-            [hostId, req.clientId]
-        );
-        
-        await client.query('COMMIT');
-        
-        res.json({ success: true });
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('Erreur:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    } finally {
-        client.release();
-    }
+	const { meetingId, hostId } = req.body; // Ajouter hostId
+	
+	const client = await pool.connect();
+	
+	try {
+		await client.query('BEGIN');
+		
+		// Vérifier que le RDV est bien fixé pour ce client
+		const result = await client.query(
+			'SELECT id FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+			[meetingId, req.clientId]
+		);
+		
+		if (result.rows.length === 0) {
+			await client.query('ROLLBACK');
+			return res.status(404).json({ error: 'Rendez-vous non trouvé' });
+		}
+		
+		// Supprimer le RDV
+		await client.query(
+			'DELETE FROM results WHERE meeting_id = $1 AND client_id = $2 AND fixed = true',
+			[meetingId, req.clientId]
+		);
+		
+		// Incrémenter requested_hours
+		await client.query(
+			'UPDATE connexions SET requested_hours = requested_hours + 1 WHERE host_id = $1 AND client_id = $2',
+			[hostId, req.clientId]
+		);
+		
+		await client.query('COMMIT');
+		
+		res.json({ success: true });
+	} catch (error) {
+		await client.query('ROLLBACK');
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	} finally {
+		client.release();
+	}
 });
 
 // Ajouter cette route après les autres routes CLIENT
 app.get('/api/client/host/:hostId/requested-hours', authenticateClient, async (req, res) => {
-    const { hostId } = req.params;
-    
-    try {
-        const result = await pool.query(
-            'SELECT requested_hours FROM connexions WHERE host_id = $1 AND client_id = $2',
-            [hostId, req.clientId]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Connexion non trouvée' });
-        }
-        
-        res.json({ requested_hours: result.rows[0].requested_hours || 1 });
-    } catch (error) {
-        console.error('Erreur:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
+	const { hostId } = req.params;
+	
+	try {
+		const result = await pool.query(
+			'SELECT requested_hours FROM connexions WHERE host_id = $1 AND client_id = $2',
+			[hostId, req.clientId]
+		);
+		
+		if (result.rows.length === 0) {
+			return res.status(404).json({ error: 'Connexion non trouvée' });
+		}
+		
+		res.json({ requested_hours: result.rows[0].requested_hours || 1 });
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	}
 });
 
 // Ajouter cette route après la précédente
 app.patch('/api/client/host/:hostId/requested-hours', authenticateClient, async (req, res) => {
-    const { hostId } = req.params;
-    const { requested_hours } = req.body;
-    
-    if (!Number.isInteger(requested_hours) || requested_hours < 0) {
-        return res.status(400).json({ error: 'requested_hours doit être un entier positif' });
-    }
-    
-    try {
-        await pool.query(
-            'UPDATE connexions SET requested_hours = $1 WHERE host_id = $2 AND client_id = $3',
-            [requested_hours, hostId, req.clientId]
-        );
-        
-        res.json({ success: true, requested_hours });
-    } catch (error) {
-        console.error('Erreur:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
+	const { hostId } = req.params;
+	const { requested_hours } = req.body;
+	
+	if (!Number.isInteger(requested_hours) || requested_hours < 0) {
+		return res.status(400).json({ error: 'requested_hours doit être un entier positif' });
+	}
+	
+	try {
+		await pool.query(
+			'UPDATE connexions SET requested_hours = $1 WHERE host_id = $2 AND client_id = $3',
+			[requested_hours, hostId, req.clientId]
+		);
+		
+		res.json({ success: true, requested_hours });
+	} catch (error) {
+		console.error('Erreur:', error);
+		res.status(500).json({ error: 'Erreur serveur' });
+	}
 });
 
 
@@ -1100,7 +1124,7 @@ async function sendFixedMeetingEmail(meetingId, clientId) {
 	try {
 		const result = await pool.query(`
 			SELECT c.name as client_name, c.email as client_email, m.start, m.duration,
-			       h.name as host_name 
+				   h.name as host_name 
 			FROM meetings m 
 			INNER JOIN hosts h ON m.host_id = h.id 
 			CROSS JOIN clients c
